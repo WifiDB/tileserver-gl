@@ -29,20 +29,20 @@ jobs:
         uses: actions/setup-node@v3
         with:
           node-version: '16'
-      - 
+      -
         name: Get version
         run: |
           echo "PACKAGE_VERSION=$(grep '"version"' package.json | cut -d '"' -f 4 | head -n 1)" >> $GITHUB_ENV
-      - 
+      -
         name: Update packages
         run: sudo apt update -qq
-      - 
+      -
         name: Install apt packages
         run: sudo apt-get install -y libcairo2-dev libjpeg8-dev libpango1.0-dev libgif-dev build-essential g++ xvfb libgles2-mesa-dev libgbm-dev libxxf86vm-dev
       -
         name: Install node dependencies
         run: npm install
-      - 
+      -
         name: Download test data
         run: wget -O test_data.zip https://github.com/acalcutt/tileserver-gl/releases/download/test_data/test_data.zip
       -
