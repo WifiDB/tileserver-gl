@@ -81,7 +81,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: acalcutt/test:latest, acalcutt/test:${{steps.version-bump.outputs.newTag}}
+          tags: wifidb/test:latest, wifidb/test:${{steps.version-bump.outputs.newTag}}
           platforms: linux/arm64,linux/amd64
       -
         name: Create Tileserver Light Directory
@@ -105,5 +105,5 @@ jobs:
           context: ./light
           file: ./light/Dockerfile
           push: true
-          tags: acalcut/test-light:latest, acalcut/test-light:${{steps.version-bump.outputs.newTag}}
+          tags: wifidb/test-light:latest, wifidb/test-light:${{steps.version-bump.outputs.newTag}}
           platforms: linux/arm64,linux/amd64
