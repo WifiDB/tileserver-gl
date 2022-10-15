@@ -25,15 +25,15 @@ jobs:
         with:
           ref: ${{ github.ref }}
       -
-        name: get-npm-version
-        id: package-version
-        uses: martinbeentjes/npm-get-version-action@main
-      -
         name: Set up node
         uses: actions/setup-node@v3
         with:
           node-version: '16'
-      -
+      - 
+        name: Get version
+        run: |
+          echo "PACKAGE_VERSION=$(grep '"version"' package.json | cut -d '"' -f 4 | head -n 1)" >> $GITHUB_ENV
+      - 
         name: Update packages
         run: sudo apt update -qq
       - 
@@ -105,5 +105,5 @@ jobs:
           context: ./light
           file: ./light/Dockerfile
           push: true
-          tags: wifidb/test-light:latest, wifidb/test-light:${{steps.version-bump.outputs.newTag}}
+          tags: wifidb/test-light:latest, wifidb/test-light:${{ env.PACKAGE_VERSION }}
           platforms: linux/arm64,linux/amd64
