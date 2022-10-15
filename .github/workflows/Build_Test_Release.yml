@@ -54,13 +54,13 @@ jobs:
       -
         name: Remove Test Data
         run: rm -R test_data*
-      -
-        name: Publish to Full Version NPM
-        run: |
-          npm config set //registry.npmjs.org/:_authToken ${NPM_TOKEN}
-          npm publish --access public
-        env:
-          NPM_TOKEN: ${{ github.event.inputs.npm_token }}
+      #-
+      #  name: Publish to Full Version NPM
+      #  run: |
+      #    npm config set //registry.npmjs.org/:_authToken ${NPM_TOKEN}
+      #    npm publish --access public
+      #  env:
+      #    NPM_TOKEN: ${{ github.event.inputs.npm_token }}
       - 
         name: Set up QEMU
         uses: docker/setup-qemu-action@v2
@@ -90,14 +90,14 @@ jobs:
         name: Install node dependencies
         run: npm install
         working-directory: ./light
-      -
-        name: Publish to Light Version NPM
-        working-directory: ./light
-        run: |
-          npm config set //registry.npmjs.org/:_authToken ${NPM_TOKEN}
-          npm publish --access public
-        env:
-          NPM_TOKEN: ${{ github.event.inputs.npm_token }}
+      #-
+      #  name: Publish to Light Version NPM
+      #  working-directory: ./light
+      #  run: |
+      #    npm config set //registry.npmjs.org/:_authToken ${NPM_TOKEN}
+      #    npm publish --access public
+      #  env:
+      #    NPM_TOKEN: ${{ github.event.inputs.npm_token }}
       -
         name: Build and publish Light Version to Docker Hub
         uses: docker/build-push-action@v3
