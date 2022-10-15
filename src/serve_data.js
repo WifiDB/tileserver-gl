@@ -1,18 +1,18 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const zlib = require('zlib');
+import fs from 'node:fs';
+import path from 'path';
+import zlib from 'zlib';
 
-const clone = require('clone');
-const express = require('express');
-const MBTiles = require('@mapbox/mbtiles');
-const Pbf = require('pbf');
-const VectorTile = require('@mapbox/vector-tile').VectorTile;
+import clone from 'clone';
+import express from 'express';
+import MBTiles from '@mapbox/mbtiles';
+import Pbf from 'pbf';
+import VectorTile from '@mapbox/vector-tile';
 
-const utils = require('./utils');
+import {getTileUrls, fixTileJSONCenter} from './utils.js';
 
-module.exports = {
+export const serve_data = {
   init: (options, repo) => {
     const app = express().disable('x-powered-by');
 
@@ -21,7 +21,7 @@ module.exports = {
       if (!item) {
         return res.sendStatus(404);
       }
-      let tileJSONFormat = item.tileJSON.format;
+      const tileJSONFormat = item.tileJSON.format;
       const z = req.params.z | 0;
       const x = req.params.x | 0;
       const y = req.params.y | 0;
@@ -52,7 +52,7 @@ module.exports = {
           } else {
             if (tileJSONFormat === 'pbf') {
               isGzipped = data.slice(0, 2).indexOf(
-                Buffer.from([0x1f, 0x8b])) === 0;
+                  Buffer.from([0x1f, 0x8b])) === 0;
               if (options.dataDecoratorFunc) {
                 if (isGzipped) {
                   data = zlib.unzipSync(data);
@@ -73,10 +73,10 @@ module.exports = {
 
               const tile = new VectorTile(new Pbf(data));
               const geojson = {
-                "type": "FeatureCollection",
-                "features": []
+                'type': 'FeatureCollection',
+                'features': []
               };
-              for (let layerName in tile.layers) {
+              for (const layerName in tile.layers) {
                 const layer = tile.layers[layerName];
                 for (let i = 0; i < layer.length; i++) {
                   const feature = layer.feature(i);
@@ -108,10 +108,10 @@ module.exports = {
         return res.sendStatus(404);
       }
       const info = clone(item.tileJSON);
-      info.tiles = utils.getTileUrls(req, info.tiles,
-                                     `data/${req.params.id}`, info.format, item.publicUrl, {
-                                       'pbf': options.pbfAlias
-                                     });
+      info.tiles = getTileUrls(req, info.tiles,
+          `data/${req.params.id}`, info.format, item.publicUrl, {
+            'pbf': options.pbfAlias
+          });
       return res.send(info);
     });
 
@@ -129,7 +129,7 @@ module.exports = {
     }
     let source;
     const sourceInfoPromise = new Promise((resolve, reject) => {
-      source = new MBTiles(mbtilesFile, err => {
+      source = new MBTiles(mbtilesFile + '?mode=ro', err => {
         if (err) {
           reject(err);
           return;
@@ -150,7 +150,7 @@ module.exports = {
           delete tileJSON['scheme'];
 
           Object.assign(tileJSON, params.tilejson || {});
-          utils.fixTileJSONCenter(tileJSON);
+          fixTileJSONCenter(tileJSON);
 
           if (options.dataDecoratorFunc) {
             tileJSON = options.dataDecoratorFunc(id, 'tilejson', tileJSON);
@@ -165,7 +165,7 @@ module.exports = {
         tileJSON,
         publicUrl,
         source
-      }
+      };
     });
   }
 };
