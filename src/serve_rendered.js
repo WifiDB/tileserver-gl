@@ -754,61 +754,38 @@ export const serve_rendered = {
       });
     };
 
-    app.get(
-      `/:id/:z(\\d+)/:x(\\d+)/:y(\\d+):scale(${scalePattern})?.:format([\\w]+)`,
-      (req, res, next) => {
-        const item = repo[req.params.id];
-        if (!item) {
-          return res.sendStatus(404);
+    app.get(`/:id/:tileSize(256|512)/:z(\\d+)/:x(\\d+)/:y(\\d+):scale(${scalePattern})?.:format([\\w]+)`, (req, res, next) => {
+      const item = repo[req.params.id];
+      if (!item) {
+        return res.sendStatus(404);
+      }
+
+      const modifiedSince = req.get('if-modified-since'), cc = req.get('cache-control');
+      if (modifiedSince && (!cc || cc.indexOf('no-cache') === -1)) {
+        if (new Date(item.lastModified) <= new Date(modifiedSince)) {
+          return res.sendStatus(304);
         }
 
-        const modifiedSince = req.get('if-modified-since');
-        const cc = req.get('cache-control');
-        if (modifiedSince && (!cc || cc.indexOf('no-cache') === -1)) {
-          if (new Date(item.lastModified) <= new Date(modifiedSince)) {
-            return res.sendStatus(304);
-          }
-        }
+      const z = req.params.z | 0,
+        x = req.params.x | 0,
+        y = req.params.y | 0,
+        scale = getScale(req.params.scale),
+        format = req.params.format,
+        tileSize = parseInt(req.params.tileSize, 10) || 256;
 
-        const z = req.params.z | 0;
-        const x = req.params.x | 0;
-        const y = req.params.y | 0;
-        const scale = getScale(req.params.scale);
-        const format = req.params.format;
-        if (
-          z < 0 ||
-          x < 0 ||
-          y < 0 ||
-          z > 22 ||
-          x >= Math.pow(2, z) ||
-          y >= Math.pow(2, z)
-        ) {
-          return res.status(404).send('Out of bounds');
-        }
-        const tileSize = 256;
-        const tileCenter = mercator.ll(
-          [
-            ((x + 0.5) / (1 << z)) * (256 << z),
-            ((y + 0.5) / (1 << z)) * (256 << z),
-          ],
-          z,
-        );
-        return respondImage(
-          item,
-          z,
-          tileCenter[0],
-          tileCenter[1],
-          0,
-          0,
-          tileSize,
-          tileSize,
-          scale,
-          format,
-          res,
-          next,
-        );
-      },
-    );
+      if (z < 0 || x < 0 || y < 0 ||
+        z > 22 || x >= Math.pow(2, z) || y >= Math.pow(2, z)) {
+        return res.status(404).send('Out of bounds');
+      };
+
+      const tileCenter = mercator.ll([
+        ((x + 0.5) / (1 << z)) * (tileSize << z),
+        ((y + 0.5) / (1 << z)) * (tileSize << z)
+      ], z);
+
+      return respondImage(item, z, tileCenter[0], tileCenter[1], 0, 0,
+        tileSize, tileSize, scale, format, res, next);
+    });
 
     if (options.serveStaticMaps !== false) {
       const staticPattern = `/:id/static/:raw(raw)?/%s/:width(\\d+)x:height(\\d+):scale(${scalePattern})?.:format([\\w]+)`;
