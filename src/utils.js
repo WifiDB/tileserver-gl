@@ -4,8 +4,7 @@ import path from 'path';
 import fsPromises from 'fs/promises';
 import fs from 'node:fs';
 import clone from 'clone';
-import { combine } from '@jsse/pbfont';
-import { existsP } from './promises.js';
+import glyphCompose from '@mapbox/glyph-pbf-composite';
 
 /**
  * Restrict user input to an allowed set of options.
@@ -214,8 +213,8 @@ export const getFontsPbf = async (
     );
   }
 
-  const combined = combine(await Promise.all(queue), names);
-  return Buffer.from(combined.buffer, 0, combined.buffer.length);
+  const values = await Promise.all(queue);
+  return glyphCompose.combine(values);
 };
 
 export const listFonts = async (fontPath) => {
