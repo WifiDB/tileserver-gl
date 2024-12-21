@@ -69,6 +69,10 @@
     };
     {{/is_terrain}}
     {{#is_terrain}}
+	let baseUrl = window.location.origin;
+	console.log(baseUrl);
+	baseUrl = baseUrl + "/data/{{id}}/contour/{z}/{x}/{y}"
+	console.log(baseUrl);
     var style = {
       version: 8,
       sources: {
@@ -81,35 +85,45 @@
           "type": "raster-dem",
           "url": "{{public_url}}data/{{id}}.json",
           "encoding": "{{terrain_encoding}}"
+        },
+        "contour": {
+          "type": "vector",
+		  "tiles":  [ baseUrl ],
         }
       },
       "terrain": {
         "source": "terrain"
       },
-      layers: [
-        {
-          "id": "background",
-          "paint": {
-            {{^if is_terrainrgb}}
-            "background-color": "hsl(190, 99%, 63%)"
-            {{else}}
-            "background-color": "hsl(0, 100%, 25%)"
-            {{/if}}
-          },
-          "type": "background"
-        },
-        {
-          "id": "hillshade",
-          "source": "hillshade",
-          "type": "hillshade",
-          "paint": {
-            "hillshade-shadow-color": "hsl(39, 21%, 33%)",
-            "hillshade-illumination-direction": 315,
-            "hillshade-exaggeration": 0.8
-          }
-        }
-      ]
-    };
+	  "layers": [
+		{
+		  "id": "background",
+		  "paint": {
+			"background-color": "hsl(190, 99%, 63%)"
+		  },
+		  "type": "background"
+		},
+		{
+		  "id": "hillshade",
+		  "source": "hillshade",
+		  "type": "hillshade",
+		  "paint": {
+			"hillshade-shadow-color": "hsl(39, 21%, 33%)",
+			"hillshade-illumination-direction": 315,
+			"hillshade-exaggeration": 0.8
+		  }
+		},
+		{
+		  "id": "contours",
+		  "type": "line",
+		  "source": "contour",
+		  "source-layer": "contours",
+		  "paint": {
+			"line-opacity": 0.5,
+			"line-width": ["match", ["get", "level"], 1, 1, 0.5]
+		  }
+		}
+	  ]
+  };
     {{/is_terrain}}
 
     var map = new maplibregl.Map({

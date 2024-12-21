@@ -222,7 +222,7 @@ export const serve_data = {
             z,
             x,
             y,
-            { levels: [100] },
+            { levels: [1000] },
             new AbortController(),
           );
 

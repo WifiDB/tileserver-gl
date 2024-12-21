@@ -99,7 +99,7 @@ export class LocalDemManager {
     console.log(url);
     const $zxy = this.extractZXYFromUrlTrim(url);
     if (!$zxy) {
-      throw new Error(`Could not extract zxy from $`);
+      throw new Error(`Could not extract zxy from $url`);
     }
     if (abortController.signal.aborted) {
       return null;
@@ -173,13 +173,8 @@ export class LocalDemManager {
    * @returns {{z: number, x: number, y:number} | null} Returns the z,x,y of the url, or null if can't extract
    */
   _extractZXYFromUrlTrimFunction(url) {
-    const lastSlashIndex = url.lastIndexOf('/');
-    if (lastSlashIndex === -1) {
-      return null;
-    }
-
-    const segments = url.split('/');
-    if (segments.length <= 3) {
+    const segments = url.split('/').filter(Boolean); // Split and remove empty segments
+    if (segments.length < 3) {
       return null;
     }
 
