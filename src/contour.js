@@ -1,6 +1,7 @@
 import sharp from 'sharp';
 import mlcontour from '../node_modules/maplibre-contour/dist/index.mjs';
 import { getPMtilesTile } from './pmtiles_adapter.js';
+import { PNG } from 'pngjs';
 
 /**
  * Manages local DEM (Digital Elevation Model) data using maplibre-contour.
@@ -60,27 +61,15 @@ export class LocalDemManager {
    */
   async getImageData(blob, abortController) {
     try {
-      if (Boolean(abortController?.signal?.aborted)) return null;
-
       const buffer = await blob.arrayBuffer();
-      const image = sharp(Buffer.from(buffer));
-      await image.metadata();
-
-      if (Boolean(abortController?.signal?.aborted)) return null;
-
-      const { data, info } = await image
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-      if (Boolean(abortController?.signal?.aborted)) return null;
-
+      const png = PNG.sync.read(Buffer.from(buffer));
       const parsed = mlcontour.decodeParsedImage(
-        info.width,
-        info.height,
+        png.width,
+        png.height,
         this.encoding,
-        data,
+        png.data,
       );
       if (Boolean(abortController?.signal?.aborted)) return null;
-
       return parsed;
     } catch (error) {
       console.error('Error processing image:', error);
