@@ -11,6 +11,7 @@ import SphericalMercator from '@mapbox/sphericalmercator';
 import { Image, createCanvas } from 'canvas';
 import sharp from 'sharp';
 
+import { LocalDemManager } from './contour.js';
 import { fixTileJSONCenter, getTileUrls, isValidHttpUrl } from './utils.js';
 import {
   getPMtilesInfo,
@@ -161,6 +162,79 @@ export const serve_data = {
               }
             }
           });
+        }
+      },
+    );
+
+    app.get(
+      '^/:id/contour/:z([0-9]+)/:x([-.0-9]+)/:y([-.0-9]+)',
+      async (req, res, next) => {
+        try {
+          const item = repo?.[req.params.id];
+          if (!item) return res.sendStatus(404);
+          if (!item.source) return res.status(404).send('Missing source');
+          if (!item.tileJSON) return res.status(404).send('Missing tileJSON');
+          if (!item.sourceType)
+            return res.status(404).send('Missing sourceType');
+
+          const { source, tileJSON, sourceType } = item;
+
+          if (sourceType !== 'pmtiles' && sourceType !== 'mbtiles') {
+            return res
+              .status(400)
+              .send('Invalid sourceType. Must be pmtiles or mbtiles.');
+          }
+
+          const encoding = tileJSON?.encoding;
+          if (encoding == null) {
+            return res.status(400).send('Missing tileJSON.encoding');
+          } else if (encoding !== 'terrarium' && encoding !== 'mapbox') {
+            return res
+              .status(400)
+              .send('Invalid encoding. Must be terrarium or mapbox.');
+          }
+
+          const format = tileJSON?.format;
+          if (format == null) {
+            return res.status(400).send('Missing tileJSON.format');
+          } else if (format !== 'webp' && format !== 'png') {
+            return res.status(400).send('Invalid format. Must be webp or png.');
+          }
+
+          const maxzoom = tileJSON?.maxzoom;
+          if (maxzoom == null) {
+            return res.status(400).send('Missing tileJSON.maxzoom');
+          }
+
+          const z = parseInt(req.params.z, 10);
+          const x = parseFloat(req.params.x);
+          const y = parseFloat(req.params.y);
+
+          const demManagerInit = new LocalDemManager(
+            encoding,
+            maxzoom,
+            source,
+            sourceType,
+          );
+          const demManager = await demManagerInit.getManager();
+
+          const $data = await demManager.fetchContourTile(
+            z,
+            x,
+            y,
+            { levels: [10] },
+            new AbortController(),
+          );
+
+          // Set the Content-Type header here
+          res.setHeader('Content-Type', 'application/x-protobuf');
+          res.setHeader('Content-Encoding', 'gzip');
+          res.send($data);
+        } catch (err) {
+          return res
+            .status(500)
+            .header('Content-Type', 'text/plain')
+            .send(err.message);
         }
       },
     );
