@@ -218,18 +218,20 @@ export const serve_data = {
           );
           const demManager = await demManagerInit.getManager();
 
-          const $data = await demManager.fetchContourTile(
+          const { arrayBuffer } = await demManager.fetchContourTile(
             z,
             x,
             y,
-            { levels: [10] },
+            { levels: [100] },
             new AbortController(),
           );
 
           // Set the Content-Type header here
           res.setHeader('Content-Type', 'application/x-protobuf');
           res.setHeader('Content-Encoding', 'gzip');
-          res.send($data);
+          let data = Buffer.from(arrayBuffer);
+          data = await gzipP(data);
+          res.send(data);
         } catch (err) {
           return res
             .status(500)
