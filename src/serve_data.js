@@ -168,139 +168,178 @@ export const serve_data = {
     app.get(
       '^/:id/elevation/:z([0-9]+)/:x([-.0-9]+)/:y([-.0-9]+)',
       async (req, res, next) => {
-        const item = repo[req.params.id];
-        if (!item) {
-          return res.sendStatus(404);
-        }
+        try {
+          const item = repo?.[req.params.id];
+          if (!item) return res.sendStatus(404);
+          if (!item.source) return res.status(404).send('Missing source');
+          if (!item.tileJSON) return res.status(404).send('Missing tileJSON');
+          if (!item.sourceType)
+            return res.status(404).send('Missing sourceType');
 
-        if (
-          item.source._info.encoding != 'terrarium' &&
-          item.source._info.encoding != 'mapbox'
-        ) {
-          return res.status(404).send('Missing encoding');
-        }
+          const { source, tileJSON, sourceType } = item;
 
-        const tileJSONFormat = item.tileJSON.format;
-        const z = req.params.z | 0;
-        var x = req.params.x;
-        var y = req.params.y;
+          if (sourceType !== 'pmtiles' && sourceType !== 'mbtiles') {
+            return res
+              .status(400)
+              .send('Invalid sourceType. Must be pmtiles or mbtiles.');
+          }
 
-        if (item.sourceType === 'pmtiles') {
-          return res.status(404).send('Invalid format');
-        } else if (item.sourceType === 'mbtiles') {
-          const mercator = new SphericalMercator();
+          const encoding = tileJSON?.encoding;
+          if (encoding == null) {
+            return res.status(400).send('Missing tileJSON.encoding');
+          } else if (encoding !== 'terrarium' && encoding !== 'mapbox') {
+            return res
+              .status(400)
+              .send('Invalid encoding. Must be terrarium or mapbox.');
+          }
+
+          const format = tileJSON?.format;
+          if (format == null) {
+            return res.status(400).send('Missing tileJSON.format');
+          } else if (format !== 'webp' && format !== 'png') {
+            return res.status(400).send('Invalid format. Must be webp or png.');
+          }
+
+          const z = parseInt(req.params.z, 10);
+          const x = parseFloat(req.params.x);
+          const y = parseFloat(req.params.y);
+
+          if (tileJSON.minzoom == null || tileJSON.maxzoom == null) {
+            return res.status(404).send(JSON.stringify(tileJSON));
+          }
+
+          const TILE_SIZE = 256;
           let tileCenter;
           let xy;
-          const int = /^-?[0-9]+$/;
-          if (int.test(x) && int.test(y)) {
-            //console.log("int")
+
+          if (Number.isInteger(x) && Number.isInteger(y)) {
+            const intX = parseInt(req.params.x, 10);
+            const intY = parseInt(req.params.y, 10);
 
             if (
-              z < item.tileJSON.minzoom ||
-              0 ||
-              x < 0 ||
-              y < 0 ||
-              z > item.tileJSON.maxzoom ||
-              x >= Math.pow(2, z) ||
-              y >= Math.pow(2, z)
+              z < tileJSON.minzoom ||
+              z > tileJSON.maxzoom ||
+              intX < 0 ||
+              intY < 0 ||
+              intX >= Math.pow(2, z) ||
+              intY >= Math.pow(2, z)
             ) {
               return res.status(404).send('Out of bounds');
             }
-
-            xy = [x | 0, y | 0];
-            tileCenter = mercator.bbox(x, y, z);
+            xy = [intX, intY];
+            tileCenter = new SphericalMercator().bbox(intX, intY, z);
           } else {
-            //console.log("float")
-
             if (
-              z < item.tileJSON.minzoom ||
+              z < tileJSON.minzoom ||
+              z > tileJSON.maxzoom ||
               x < -180 ||
               y < -90 ||
-              z > item.tileJSON.maxzoom ||
               x > 180 ||
               y > 90
             ) {
               return res.status(404).send('Out of bounds');
             }
 
-            x = parseFloat(x);
-            y = parseFloat(y);
             tileCenter = [y, x, y + 0.1, x + 0.1];
-            xy = mercator.xyz(tileCenter, z);
-            xy = [xy.minX, xy.minY];
+            const { minX, minY } = new SphericalMercator().xyz(tileCenter, z);
+            xy = [minX, minY];
           }
 
-          //console.log(tileCenter + " ## " + xy);
-          item.source.getTile(z, xy[0], xy[1], async (err, data, headers) => {
-            if (err) {
-              if (/does not exist/.test(err.message)) {
-                return res.status(204).send();
+          let data;
+          if (sourceType === 'pmtiles') {
+            const tileinfo = await getPMtilesTile(source, z, x, y);
+            if (!tileinfo?.data) return res.status(204).send();
+            data = tileinfo.data;
+          } else {
+            data = await new Promise((resolve, reject) => {
+              source.getTile(z, xy[0], xy[1], (err, tileData) => {
+                if (err) {
+                  return /does not exist/.test(err.message)
+                    ? resolve(null)
+                    : reject(err);
+                }
+                resolve(tileData);
+              });
+            });
+          }
+          if (data == null) return res.status(204).send();
+          if (!data) return res.status(404).send('Not found');
+          if (tileJSON.format === 'pbf')
+            return res.status(400).send('Invalid format');
+
+          const image = new Image();
+          await new Promise(async (resolve, reject) => {
+            image.onload = async () => {
+              const canvas = createCanvas(TILE_SIZE, TILE_SIZE);
+              const context = canvas.getContext('2d');
+              context.drawImage(image, 0, 0);
+              const imgdata = context.getImageData(0, 0, TILE_SIZE, TILE_SIZE);
+
+              const arrayWidth = imgdata.width;
+              const arrayHeight = imgdata.height;
+              const bytesPerPixel = 4;
+
+              const xPixel = Math.floor(xy[0]);
+              const yPixel = Math.floor(xy[1]);
+
+              if (
+                xPixel < 0 ||
+                yPixel < 0 ||
+                xPixel >= arrayWidth ||
+                yPixel >= arrayHeight
+              ) {
+                return reject('Out of bounds Pixel');
+              }
+
+              const index = (yPixel * arrayWidth + xPixel) * bytesPerPixel;
+
+              const red = imgdata.data[index];
+              const green = imgdata.data[index + 1];
+              const blue = imgdata.data[index + 2];
+
+              let elevation;
+              if (encoding === 'mapbox') {
+                elevation =
+                  -10000 + (red * 256 * 256 + green * 256 + blue) * 0.1;
+              } else if (encoding === 'terrarium') {
+                elevation = red * 256 + green + blue / 256 - 32768;
               } else {
-                return res
-                  .status(500)
-                  .header('Content-Type', 'text/plain')
-                  .send(err.message);
+                elevation = 'invalid encoding';
+              }
+
+              resolve(
+                res.status(200).send({
+                  z,
+                  x: xy[0],
+                  y: xy[1],
+                  red,
+                  green,
+                  blue,
+                  latitude: tileCenter[0],
+                  longitude: tileCenter[1],
+                  elevation,
+                }),
+              );
+            };
+
+            image.onerror = (err) => reject(err);
+
+            if (format === 'webp') {
+              try {
+                const img = await sharp(data).toFormat('png').toBuffer();
+                image.src = img;
+              } catch (err) {
+                reject(err);
               }
             } else {
-              if (data == null) {
-                return res.status(404).send('Not found');
-              } else {
-                if (tileJSONFormat === 'pbf') {
-                  return res.status(404).send('Invalid format');
-                }
-                var image = new Image();
-                image.onload = function () {
-                  const imgSize = 256;
-                  var canvas = createCanvas(imgSize, imgSize);
-
-                  var context = canvas.getContext('2d');
-                  context.drawImage(image, 0, 0);
-
-                  var imgdata = context.getImageData(0, 0, imgSize, imgSize);
-
-                  var index = (xy[1] * imgdata.width + xy[0]) * 4;
-                  var red = imgdata.data[index];
-                  var green = imgdata.data[index + 1];
-                  var blue = imgdata.data[index + 2];
-                  let elevation;
-                  if (item.source._info.encoding == 'mapbox') {
-                    elevation =
-                      -10000 + (red * 256 * 256 + green * 256 + blue) * 0.1;
-                  } else if (item.source._info.encoding == 'terrarium') {
-                    elevation = red * 256 + green + blue / 256 - 32768;
-                  } else {
-                    elevation = 'invalid encoding';
-                  }
-                  //"index": index, "length": imgdata.data.length,
-                  return res.status(200).send({
-                    z: z,
-                    x: xy[0],
-                    y: xy[1],
-                    red: red,
-                    green: green,
-                    blue: blue,
-                    latitude: tileCenter[0],
-                    longitude: tileCenter[1],
-                    elevation: elevation,
-                  });
-                };
-                image.onerror = (err) => {
-                  return res
-                    .status(500)
-                    .header('Content-Type', 'text/plain')
-                    .send(err.message);
-                };
-                //image.onerror = err => { return res.status(200).header('Content-Type', 'image/webp').send(data); }
-
-                if (item.source._info.format == 'webp') {
-                  const img = await sharp(data).toFormat('png').toBuffer();
-                  image.src = img;
-                } else {
-                  image.src = data;
-                }
-              }
+              image.src = data;
             }
           });
+        } catch (err) {
+          return res
+            .status(500)
+            .header('Content-Type', 'text/plain')
+            .send(err.message);
         }
       },
     );
@@ -368,6 +407,7 @@ export const serve_data = {
       sourceType = 'pmtiles';
       const metadata = await getPMtilesInfo(source);
 
+      tileJSON['encoding'] = params['encoding'];
       tileJSON['name'] = id;
       tileJSON['format'] = 'pbf';
       Object.assign(tileJSON, metadata);
@@ -388,7 +428,7 @@ export const serve_data = {
       const mbw = await openMbTilesWrapper(inputFile);
       const info = await mbw.getInfo();
       source = mbw.getMbTiles();
-      info['encoding'] = params['encoding'];
+      tileJSON['encoding'] = params['encoding'];
       tileJSON['name'] = id;
       tileJSON['format'] = 'pbf';
 
