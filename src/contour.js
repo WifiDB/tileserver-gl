@@ -8,12 +8,12 @@ import { getPMtilesTile } from './pmtiles_adapter.js';
 export class LocalDemManager {
   /**
    * Creates a new LocalDemManager instance.
-   * @param {string} encoding - The encoding type for the DEM data.
-   * @param {number} maxzoom - The maximum zoom level for the DEM data.
-   * @param {object} source - The source object that contains either pmtiles or mbtiles.
+   * @param  encoding - The encoding type for the DEM data.
+   * @param  maxzoom - The maximum zoom level for the DEM data.
+   * @param  source - The source object that contains either pmtiles or mbtiles.
    * @param {'pmtiles' | 'mbtiles'} sourceType -  The type of data source
-   * @param {Function} [extractZXYFromUrlTrimFunction] - The function to extract the zxy from the url.
-   * @param {Function} [GetTileFunction]  - the function that returns a tile from the pmtiles object.
+   * @param  [extractZXYFromUrlTrimFunction] - The function to extract the zxy from the url.
+   * @param  [GetTileFunction]  - the function that returns a tile from the pmtiles object.
    */
   constructor(
     encoding,
@@ -27,9 +27,8 @@ export class LocalDemManager {
     this.maxzoom = maxzoom;
     this.source = source;
     this.sourceType = sourceType;
-    this.getTile = GetTileFunction || this.GetTile.bind(this);
-    this.extractZXYFromUrlTrim =
-      extractZXYFromUrlTrimFunction || this.extractZXYFromUrlTrim.bind(this);
+    this._getTile = GetTileFunction;
+    this._extractZXYFromUrlTrim = extractZXYFromUrlTrimFunction;
 
     this.manager = new mlcontour.LocalDemManager({
       demUrlPattern: '/{z}/{x}/{y}',
@@ -42,12 +41,22 @@ export class LocalDemManager {
     });
   }
 
+  get getTileFunction() {
+    return this._getTile ? this._getTile.bind(this) : this.GetTile.bind(this);
+  }
+
+  get extractZXYFromUrlTrim() {
+    return this._extractZXYFromUrlTrim
+      ? this._extractZXYFromUrlTrim.bind(this)
+      : this._extractZXYFromUrlTrimFunction.bind(this);
+  }
+
   /**
    * Processes image data from a blob.
-   * @param {Blob} blob - The image data as a Blob.
-   * @param {AbortController} abortController - An AbortController to cancel the image processing.
+   * @param  blob - The image data as a Blob.
+   * @param  abortController - An AbortController to cancel the image processing.
    * @returns {Promise<any>} - A Promise that resolves with the processed image data, or null if aborted.
-   * @throws {Error} If an error occurs during image processing.
+   * @throws  If an error occurs during image processing.
    */
   async getImageData(blob, abortController) {
     try {
@@ -81,10 +90,10 @@ export class LocalDemManager {
 
   /**
    * Fetches a tile using the provided url and abortController
-   * @param {string} url - The url that should be used to fetch the tile.
-   * @param {AbortController} abortController - An AbortController to cancel the request.
+   * @param  url - The url that should be used to fetch the tile.
+   * @param  abortController - An AbortController to cancel the request.
    * @returns {Promise<{data: Blob, expires: undefined, cacheControl: undefined}>} A promise that resolves with the response data.
-   * @throws {Error} If an error occurs fetching or processing the tile.
+   * @throws  If an error occurs fetching or processing the tile.
    */
   async GetTile(url, abortController) {
     console.log(url);
@@ -100,7 +109,7 @@ export class LocalDemManager {
       let data;
       if (this.sourceType === 'pmtiles') {
         let zxyTile;
-        if (this.getPMtilesTile) {
+        if (getPMtilesTile) {
           zxyTile = await getPMtilesTile(
             this.source,
             $zxy.z,
@@ -160,10 +169,10 @@ export class LocalDemManager {
 
   /**
    * Default implementation for extracting z,x,y from a url
-   * @param {string} url - The url to extract from
+   * @param  url - The url to extract from
    * @returns {{z: number, x: number, y:number} | null} Returns the z,x,y of the url, or null if can't extract
    */
-  extractZXYFromUrlTrim(url) {
+  _extractZXYFromUrlTrimFunction(url) {
     // 1. Find the index of the last `/`
     const lastSlashIndex = url.lastIndexOf('/');
     if (lastSlashIndex === -1) {
@@ -197,7 +206,7 @@ export class LocalDemManager {
 
   /**
    * Get the underlying maplibre-contour LocalDemManager
-   * @returns {any} the underlying maplibre-contour LocalDemManager
+   * @returns  the underlying maplibre-contour LocalDemManager
    */
   getManager() {
     return this.manager;
