@@ -64,7 +64,8 @@ export class LocalDemManager {
 
       const buffer = await blob.arrayBuffer();
       const image = sharp(Buffer.from(buffer));
-      const metadata = await image.metadata();
+      await image.metadata();
+
       if (Boolean(abortController?.signal?.aborted)) return null;
 
       const { data, info } = await image
