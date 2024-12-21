@@ -218,19 +218,27 @@ export const serve_data = {
           );
           const demManager = await demManagerInit.getManager();
 
-          const $data = await demManager.fetchContourTile(
+          console.log(`Calling fetchContourTile with z=${z}, x=${x}, y=${y}`);
+          const { arrayBuffer } = await demManager.fetchContourTile(
             z,
             x,
             y,
-            { levels: [10] },
+            { levels: [100] },
             new AbortController(),
           );
 
+          console.log('Returned data from fetchContourTile', { arrayBuffer });
+
           // Set the Content-Type header here
           res.setHeader('Content-Type', 'application/x-protobuf');
-          res.setHeader('Content-Encoding', 'gzip');
-          res.send($data);
+          // If the data isn't gzip already do not set this header!
+          // res.setHeader('Content-Encoding', 'gzip');
+
+          // Convert ArrayBuffer to Buffer
+          const buffer = Buffer.from(arrayBuffer);
+          res.send(buffer);
         } catch (err) {
+          console.error('Error in server route', err);
           return res
             .status(500)
             .header('Content-Type', 'text/plain')

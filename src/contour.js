@@ -6,15 +6,6 @@ import { getPMtilesTile } from './pmtiles_adapter.js';
  * Manages local DEM (Digital Elevation Model) data using maplibre-contour.
  */
 export class LocalDemManager {
-  /**
-   * Creates a new LocalDemManager instance.
-   * @param  encoding - The encoding type for the DEM data.
-   * @param  maxzoom - The maximum zoom level for the DEM data.
-   * @param  source - The source object that contains either pmtiles or mbtiles.
-   * @param {'pmtiles' | 'mbtiles'} sourceType -  The type of data source
-   * @param  [extractZXYFromUrlTrimFunction] - The function to extract the zxy from the url.
-   * @param  [GetTileFunction]  - the function that returns a tile from the pmtiles object.
-   */
   constructor(
     encoding,
     maxzoom,
@@ -51,26 +42,30 @@ export class LocalDemManager {
       : this._extractZXYFromUrlTrimFunction.bind(this);
   }
 
-  /**
-   * Processes image data from a blob.
-   * @param  blob - The image data as a Blob.
-   * @param  abortController - An AbortController to cancel the image processing.
-   * @returns {Promise<any>} - A Promise that resolves with the processed image data, or null if aborted.
-   * @throws  If an error occurs during image processing.
-   */
   async getImageData(blob, abortController) {
     try {
-      if (Boolean(abortController?.signal?.aborted)) return null; // Check for abort signal.
+      if (Boolean(abortController?.signal?.aborted)) {
+        console.log('getImageData aborted early');
+        return null; // Check for abort signal.
+      }
 
       const buffer = await blob.arrayBuffer();
       const image = sharp(Buffer.from(buffer));
       const metadata = await image.metadata();
-      if (Boolean(abortController?.signal?.aborted)) return null; // Check for abort signal.
+
+      if (Boolean(abortController?.signal?.aborted)) {
+        console.log('getImageData aborted after metadata');
+        return null; // Check for abort signal.
+      }
 
       const { data, info } = await image
         .raw()
         .toBuffer({ resolveWithObject: true });
-      if (Boolean(abortController?.signal?.aborted)) return null; // Check for abort signal.
+
+      if (Boolean(abortController?.signal?.aborted)) {
+        console.log('getImageData aborted after raw');
+        return null; // Check for abort signal.
+      }
 
       const parsed = mlcontour.decodeParsedImage(
         info.width,
@@ -78,31 +73,28 @@ export class LocalDemManager {
         this.encoding,
         data,
       );
-      if (Boolean(abortController?.signal?.aborted)) return null; // Check for abort signal.
+
+      if (Boolean(abortController?.signal?.aborted)) {
+        console.log('getImageData aborted after parsing');
+        return null; // Check for abort signal.
+      }
 
       return parsed;
     } catch (error) {
       console.error('Error processing image:', error);
-      throw error; // Rethrow to handle upstream
-      // return null; // Or handle error gracefully
+      throw error;
     }
   }
 
-  /**
-   * Fetches a tile using the provided url and abortController
-   * @param  url - The url that should be used to fetch the tile.
-   * @param  abortController - An AbortController to cancel the request.
-   * @returns {Promise<{data: Blob, expires: undefined, cacheControl: undefined}>} A promise that resolves with the response data.
-   * @throws  If an error occurs fetching or processing the tile.
-   */
   async GetTile(url, abortController) {
-    console.log(url);
+    console.log('GetTile called with URL:', url); // Debugging log
     const $zxy = this.extractZXYFromUrlTrim(url);
     if (!$zxy) {
-      throw new Error(`Could not extract zxy from $`);
+      throw new Error(`Could not extract zxy from ${url}`);
     }
     if (abortController.signal.aborted) {
-      return null; // Or throw an error
+      console.log('GetTile aborted before fetch');
+      return null;
     }
 
     try {
@@ -110,6 +102,7 @@ export class LocalDemManager {
       if (this.sourceType === 'pmtiles') {
         let zxyTile;
         if (getPMtilesTile) {
+          console.log('Fetching PMTile with getPMtilesTile, zxy:', $zxy);
           zxyTile = await getPMtilesTile(
             this.source,
             $zxy.z,
@@ -119,19 +112,20 @@ export class LocalDemManager {
           );
         } else {
           if (abortController.signal.aborted) {
-            console.log('pmtiles aborted in default');
+            console.log('GetTile pmtiles aborted in default');
             return null;
           }
           zxyTile = {
             data: new Uint8Array([$zxy.z, $zxy.x, $zxy.y]),
           };
         }
-
         if (!zxyTile || !zxyTile.data) {
-          throw new Error(`No tile returned for $`);
+          throw new Error(`No tile returned for ${url} PMTILE`);
         }
         data = zxyTile.data;
+        console.log('GetTile PMTiles data:', data);
       } else {
+        console.log('Fetching MBTile with getTile, zxy:', $zxy);
         data = await new Promise((resolve, reject) => {
           this.source.getTile($zxy.z, $zxy.x, $zxy.y, (err, tileData) => {
             if (err) {
@@ -139,44 +133,45 @@ export class LocalDemManager {
                 ? resolve(null)
                 : reject(err);
             }
+            console.log('GetTile MBTiles data:', tileData);
             resolve(tileData);
           });
         });
       }
 
       if (data == null) {
+        console.log('GetTile data is null');
         return null;
       }
 
       if (!data) {
-        throw new Error(`No tile returned for $`);
+        throw new Error(`No tile returned for ${url}`);
       }
 
+      console.log('Creating blob with data');
       const blob = new Blob([data]);
+      console.log(blob);
+
+      console.log('Returning blob from GetTile', blob);
       return {
         data: blob,
         expires: undefined,
         cacheControl: undefined,
       };
     } catch (error) {
+      console.log('GetTile error', error);
       if (error.name === 'AbortError') {
-        console.log('fetch cancelled');
+        console.log('fetch cancelled (GetTile)');
         return null;
       }
-      throw error; // Rethrow for handling upstream
+      throw error;
     }
   }
 
-  /**
-   * Default implementation for extracting z,x,y from a url
-   * @param  url - The url to extract from
-   * @returns {{z: number, x: number, y:number} | null} Returns the z,x,y of the url, or null if can't extract
-   */
   _extractZXYFromUrlTrimFunction(url) {
-    // 1. Find the index of the last `/`
     const lastSlashIndex = url.lastIndexOf('/');
     if (lastSlashIndex === -1) {
-      return null; // URL does not have any slashes
+      return null;
     }
 
     const segments = url.split('/');
@@ -192,22 +187,17 @@ export class LocalDemManager {
     const cleanedYSegment =
       lastDotIndex === -1 ? ySegment : ySegment.substring(0, lastDotIndex);
 
-    // 3. Attempt to parse segments as numbers
     const z = parseInt(zSegment, 10);
     const x = parseInt(xSegment, 10);
     const y = parseInt(cleanedYSegment, 10);
 
     if (isNaN(z) || isNaN(x) || isNaN(y)) {
-      return null; // Conversion failed, invalid URL format
+      return null;
     }
 
     return { z, x, y };
   }
 
-  /**
-   * Get the underlying maplibre-contour LocalDemManager
-   * @returns  the underlying maplibre-contour LocalDemManager
-   */
   getManager() {
     return this.manager;
   }
