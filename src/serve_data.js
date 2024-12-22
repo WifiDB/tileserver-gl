@@ -218,11 +218,24 @@ export const serve_data = {
           );
           const demManager = await demManagerInit.getManager();
 
+          let levels = 6;
+          if (z <= 5) {
+            levels = 1000;
+          } else if (z <= 8) {
+            levels = 500;
+          } else if (z <= 10) {
+            levels = 100;
+          } else if (z <= 12) {
+            levels = 50;
+          } else if (z <= 14) {
+            levels = 10;
+          }
+
           const { arrayBuffer } = await demManager.fetchContourTile(
             z,
             x,
             y,
-            { levels: [1000] },
+            { levels: [levels] },
             new AbortController(),
           );
 
