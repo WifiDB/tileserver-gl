@@ -1,7 +1,6 @@
 import sharp from 'sharp';
 import mlcontour from '../node_modules/maplibre-contour/dist/index.mjs';
 import { getPMtilesTile } from './pmtiles_adapter.js';
-import { PNG } from 'pngjs';
 
 /**
  * Manages local DEM (Digital Elevation Model) data using maplibre-contour.
