@@ -13,7 +13,8 @@ export class LocalDemManager {
    * @param {object} source - The source object that contains either pmtiles or mbtiles.
    * @param {'pmtiles' | 'mbtiles'} sourceType - The type of data source
    * @param {Function} [GetTileFunction] - the function that returns a tile from the pmtiles object.
-   * @param {Function} [extractZXYFromUrlTrimFunction] - The function to extract the zxy from the url.
+   * @param {Function} [GetImageFunction] - the function that returns a tile from the pmtiles object.
+   * @param {Function} [extractZXYFromUrlFunction] - The function to extract the zxy from the url.
    */
   constructor(
     encoding,
@@ -21,14 +22,16 @@ export class LocalDemManager {
     source,
     sourceType,
     GetTileFunction,
-    extractZXYFromUrlTrimFunction,
+    GetImageFunction,
+    extractZXYFromUrlFunction,
   ) {
     this.encoding = encoding;
     this.maxzoom = maxzoom;
     this.source = source;
     this.sourceType = sourceType;
     this._getTile = GetTileFunction;
-    this._extractZXYFromUrlTrim = extractZXYFromUrlTrimFunction;
+    this._decodeImage = GetImageFunction;
+    this._extractZXY = extractZXYFromUrlFunction;
 
     this.manager = new mlcontour.LocalDemManager({
       demUrlPattern: '/{z}/{x}/{y}',
@@ -36,7 +39,7 @@ export class LocalDemManager {
       encoding: this.encoding,
       maxzoom: this.maxzoom,
       timeoutMs: 10000,
-      decodeImage: this.getImageData.bind(this),
+      decodeImage: this.getImageFunction.bind(this),
       getTile: this.getTileFunction.bind(this),
     });
   }
@@ -45,10 +48,16 @@ export class LocalDemManager {
     return this._getTile ? this._getTile.bind(this) : this.GetTile.bind(this);
   }
 
+  get getImageFunction() {
+    return this._decodeImage
+      ? this._decodeImage.bind(this)
+      : this.getImageData.bind(this);
+  }
+
   get extractZXYFromUrlTrim() {
-    return this._extractZXYFromUrlTrim
-      ? this._extractZXYFromUrlTrim.bind(this)
-      : this._extractZXYFromUrlTrimFunction.bind(this);
+    return this._extractZXY
+      ? this._extractZXY.bind(this)
+      : this._extractZXYFromUrl.bind(this);
   }
 
   /**
@@ -64,8 +73,6 @@ export class LocalDemManager {
 
       const buffer = await blob.arrayBuffer();
       const image = sharp(Buffer.from(buffer));
-
-      const metadata = await image.metadata();
 
       if (Boolean(abortController?.signal?.aborted)) return null;
 
@@ -176,7 +183,7 @@ export class LocalDemManager {
    * @param {string} url - The url to extract from
    * @returns {{z: number, x: number, y:number} | null} Returns the z,x,y of the url, or null if can't extract
    */
-  _extractZXYFromUrlTrimFunction(url) {
+  _extractZXYFromUrl(url) {
     const segments = url.split('/').filter(Boolean); // Split and remove empty segments
     if (segments.length < 3) {
       return null;
