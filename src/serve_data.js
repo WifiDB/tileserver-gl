@@ -218,17 +218,25 @@ export const serve_data = {
           );
           const demManager = await demManagerInit.getManager();
 
-          let levels = 6;
-          if (z <= 5) {
+          let levels;
+          if (z <= 8) {
             levels = 1000;
           } else if (z <= 10) {
             levels = 500;
+          } else if (z <= 11) {
+            levels = 250;
           } else if (z <= 12) {
             levels = 100;
-          } else if (z <= 14) {
+          } else if (z <= 13) {
             levels = 50;
-          } else if (z <= 16) {
+          } else if (z <= 14) {
+            levels = 25;
+          } else if (z <= 15) {
+            levels = 20;
+          } else if (z <= 17) {
             levels = 10;
+          } else if (z >= 18) {
+            levels = 5;
           }
 
           const { arrayBuffer } = await demManager.fetchContourTile(
