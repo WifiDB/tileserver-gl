@@ -61,15 +61,31 @@ export class LocalDemManager {
    */
   async getImageData(blob, abortController) {
     try {
-      const buffer = await blob.arrayBuffer();
-      const png = PNG.sync.read(Buffer.from(buffer));
-      const parsed = mlcontour.decodeParsedImage(
-        png.width,
-        png.height,
-        this.encoding,
-        png.data,
-      );
       if (Boolean(abortController?.signal?.aborted)) return null;
+
+      const buffer = await blob.arrayBuffer();
+      const image = sharp(Buffer.from(buffer));
+
+      const metadata = await image.metadata();
+
+      if (Boolean(abortController?.signal?.aborted)) return null;
+
+      const { data, info } = await image
+        .ensureAlpha() // Ensure RGBA output
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+
+      if (Boolean(abortController?.signal?.aborted)) return null;
+
+      const parsed = mlcontour.decodeParsedImage(
+        info.width,
+        info.height,
+        this.encoding,
+        data,
+      );
+
+      if (Boolean(abortController?.signal?.aborted)) return null;
+
       return parsed;
     } catch (error) {
       console.error('Error processing image:', error);
