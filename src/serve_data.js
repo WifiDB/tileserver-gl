@@ -221,13 +221,13 @@ export const serve_data = {
           let levels = 6;
           if (z <= 5) {
             levels = 1000;
-          } else if (z <= 8) {
-            levels = 500;
           } else if (z <= 10) {
-            levels = 100;
+            levels = 500;
           } else if (z <= 12) {
-            levels = 50;
+            levels = 100;
           } else if (z <= 14) {
+            levels = 50;
+          } else if (z <= 16) {
             levels = 10;
           }
 
