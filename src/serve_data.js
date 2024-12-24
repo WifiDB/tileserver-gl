@@ -7,11 +7,13 @@ import clone from 'clone';
 import express from 'express';
 import Pbf from 'pbf';
 import { VectorTile } from '@mapbox/vector-tile';
+import { contours } from 'd3-contour';
+import { range, min, max } from 'd3-array';
 import SphericalMercator from '@mapbox/sphericalmercator';
 import { Image, createCanvas } from 'canvas';
 import sharp from 'sharp';
 
-import { LocalDemManager } from './contour.js';
+import { LocalDemManager, getImageData } from './contour.js';
 import { fixTileJSONCenter, getTileUrls, isValidHttpUrl } from './utils.js';
 import {
   getPMtilesInfo,
@@ -162,6 +164,157 @@ export const serve_data = {
               }
             }
           });
+        }
+      },
+    );
+
+    app.get(
+      '^/:id/contour/:z([0-9]+)/:x([-.0-9]+)/:y([-.0-9]+).pbf',
+      async (req, res, next) => {
+        try {
+          // Helper functions
+          const terrainrgb2height = (r, g, b) => {
+            return -10000 + (r * 256 * 256 + g * 256 + b) * 0.1;
+          };
+
+          const serializeMVT = (geojsonFeatures, width, height) => {
+            const layer = {
+              name: 'contours',
+              features: [],
+            };
+
+            geojsonFeatures.forEach((feature) => {
+              const pbfFeature = new VectorTile.VectorTileFeature(
+                0,
+                1,
+                feature,
+              ); // dummy tile, feature id
+              layer.features.push(pbfFeature);
+            });
+
+            const pbf = new Pbf();
+            const vt = new VectorTile(pbf);
+            vt.addLayer(layer);
+
+            const buffer = pbf.finish();
+            return buffer;
+          };
+
+          const generateGeoJSON = async (heightValues, width, height, step) => {
+            const thresholds = range(
+              min(heightValues) + step,
+              max(heightValues),
+              step,
+            );
+
+            const contoursGenerator = contours()
+              .size([width, height])
+              .thresholds(thresholds);
+            const contourPolygons = contoursGenerator(heightValues);
+            const geojsonFeatures = contourPolygons.map((d) => {
+              return {
+                type: 'Feature',
+                geometry: d,
+                properties: { elevation: d.value },
+              };
+            });
+            return serializeMVT(geojsonFeatures, width, height);
+          };
+          // Functions above
+          const item = repo?.[req.params.id];
+          if (!item) return res.sendStatus(404);
+          if (!item.source) return res.status(404).send('Missing source');
+          if (!item.tileJSON) return res.status(404).send('Missing tileJSON');
+          if (!item.sourceType)
+            return res.status(404).send('Missing sourceType');
+
+          const { source, tileJSON, sourceType } = item;
+
+          if (sourceType !== 'pmtiles' && sourceType !== 'mbtiles') {
+            return res
+              .status(400)
+              .send('Invalid sourceType. Must be pmtiles or mbtiles.');
+          }
+
+          const encoding = tileJSON?.encoding;
+          if (encoding == null) {
+            return res.status(400).send('Missing tileJSON.encoding');
+          } else if (encoding !== 'terrarium' && encoding !== 'mapbox') {
+            return res
+              .status(400)
+              .send('Invalid encoding. Must be terrarium or mapbox.');
+          }
+
+          const format = tileJSON?.format;
+          if (format == null) {
+            return res.status(400).send('Missing tileJSON.format');
+          } else if (format !== 'webp' && format !== 'png') {
+            return res.status(400).send('Invalid format. Must be webp or png.');
+          }
+
+          const maxzoom = tileJSON?.maxzoom;
+          if (maxzoom == null) {
+            return res.status(400).send('Missing tileJSON.maxzoom');
+          }
+
+          const z = parseInt(req.params.z, 10);
+          const x = parseFloat(req.params.x);
+          const y = parseFloat(req.params.y);
+          let data;
+
+          const getPMtilesTile = async (source, z, x, y) => {
+            const pmtiles = new PMTiles(source);
+            try {
+              const data = await pmtiles.getTile(z, x, y);
+              return data;
+            } catch (error) {
+              return null;
+            }
+          };
+
+          if (sourceType === 'pmtiles') {
+            const tileinfo = await getPMtilesTile(source, z, x, y);
+            if (!tileinfo?.data) return res.status(204).send();
+            data = tileinfo.data;
+          } else {
+            data = await new Promise((resolve, reject) => {
+              source.getTile(z, x, y, (err, tileData) => {
+                if (err) {
+                  return /does not exist/.test(err.message)
+                    ? resolve(null)
+                    : reject(err);
+                }
+                resolve(tileData);
+              });
+            });
+          }
+
+          if (data == null) return res.status(204).send();
+
+          const imageData = await getImageData(new Blob([data]), null);
+
+          const { width, height, data: imagePixelData } = imageData;
+          const heightValues = [];
+          for (let i = 0; i < imagePixelData.length / 4; i++) {
+            const height = terrainrgb2height(
+              imagePixelData[i * 4],
+              imagePixelData[i * 4 + 1],
+              imagePixelData[i * 4 + 2],
+            );
+            heightValues.push(height);
+          }
+
+          const mvtBuffer = await generateGeoJSON(
+            heightValues,
+            width,
+            height,
+            100,
+          );
+          res.setHeader('Content-Type', 'application/x-protobuf');
+          res.send(mvtBuffer);
+        } catch (error) {
+          console.error('Error processing request', error);
+          res.status(500).send('Error processing tile');
         }
       },
     );
@@ -361,8 +514,6 @@ export const serve_data = {
           }
           if (data == null) return res.status(204).send();
           if (!data) return res.status(404).send('Not found');
-          if (tileJSON.format === 'pbf')
-            return res.status(400).send('Invalid format');
 
           const image = new Image();
           await new Promise(async (resolve, reject) => {
