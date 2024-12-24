@@ -7,14 +7,23 @@ import clone from 'clone';
 import express from 'express';
 import Pbf from 'pbf';
 import { VectorTile } from '@mapbox/vector-tile';
-import { contours } from 'd3-contour';
-import { range, min, max } from 'd3-array';
 import SphericalMercator from '@mapbox/sphericalmercator';
 import { Image, createCanvas } from 'canvas';
 import sharp from 'sharp';
 
-import { LocalDemManager, getImageData } from './contour.js';
-import { fixTileJSONCenter, getTileUrls, isValidHttpUrl } from './utils.js';
+import { LocalDemManager } from './contour.js';
+import {
+  getImageData,
+  serializeMVT,
+  extractHeightValues,
+  generateGeoJSON,
+} from './terrain.js';
+import {
+  fixTileJSONCenter,
+  getTileUrls,
+  isValidHttpUrl,
+  fetchTileData,
+} from './utils.js';
 import {
   getPMtilesInfo,
   getPMtilesTile,
@@ -169,58 +178,9 @@ export const serve_data = {
     );
 
     app.get(
-      '^/:id/contour/:z([0-9]+)/:x([-.0-9]+)/:y([-.0-9]+).pbf',
+      '^/:id/contour/:z([0-9]+)/:x([-.0-9]+)/:y([-.0-9]+)',
       async (req, res, next) => {
         try {
-          // Helper functions
-          const terrainrgb2height = (r, g, b) => {
-            return -10000 + (r * 256 * 256 + g * 256 + b) * 0.1;
-          };
-
-          const serializeMVT = (geojsonFeatures, width, height) => {
-            const layer = {
-              name: 'contours',
-              features: [],
-            };
-
-            geojsonFeatures.forEach((feature) => {
-              const pbfFeature = new VectorTile.VectorTileFeature(
-                0,
-                1,
-                feature,
-              ); // dummy tile, feature id
-              layer.features.push(pbfFeature);
-            });
-
-            const pbf = new Pbf();
-            const vt = new VectorTile(pbf);
-            vt.addLayer(layer);
-
-            const buffer = pbf.finish();
-            return buffer;
-          };
-
-          const generateGeoJSON = async (heightValues, width, height, step) => {
-            const thresholds = range(
-              min(heightValues) + step,
-              max(heightValues),
-              step,
-            );
-
-            const contoursGenerator = contours()
-              .size([width, height])
-              .thresholds(thresholds);
-            const contourPolygons = contoursGenerator(heightValues);
-            const geojsonFeatures = contourPolygons.map((d) => {
-              return {
-                type: 'Feature',
-                geometry: d,
-                properties: { elevation: d.value },
-              };
-            });
-            return serializeMVT(geojsonFeatures, width, height);
-          };
-          // Functions above
           const item = repo?.[req.params.id];
           if (!item) return res.sendStatus(404);
           if (!item.source) return res.status(404).send('Missing source');
@@ -260,58 +220,60 @@ export const serve_data = {
           const z = parseInt(req.params.z, 10);
           const x = parseFloat(req.params.x);
           const y = parseFloat(req.params.y);
+
           let data;
-
-          const getPMtilesTile = async (source, z, x, y) => {
-            const pmtiles = new PMTiles(source);
-            try {
-              const data = await pmtiles.getTile(z, x, y);
-              return data;
-            } catch (error) {
-              return null;
-            }
-          };
-
-          if (sourceType === 'pmtiles') {
-            const tileinfo = await getPMtilesTile(source, z, x, y);
-            if (!tileinfo?.data) return res.status(204).send();
-            data = tileinfo.data;
-          } else {
-            data = await new Promise((resolve, reject) => {
-              source.getTile(z, x, y, (err, tileData) => {
-                if (err) {
-                  return /does not exist/.test(err.message)
-                    ? resolve(null)
-                    : reject(err);
-                }
-                resolve(tileData);
-              });
-            });
+          try {
+            data = await fetchTileData(source, sourceType, z, x, y);
+          } catch (error) {
+            console.error('Error during fetchTileData', error);
+            return res.status(500).send('Error during fetchTileData');
           }
-
           if (data == null) return res.status(204).send();
 
-          const imageData = await getImageData(new Blob([data]), null);
-
-          const { width, height, data: imagePixelData } = imageData;
-          const heightValues = [];
-          for (let i = 0; i < imagePixelData.length / 4; i++) {
-            const height = terrainrgb2height(
-              imagePixelData[i * 4],
-              imagePixelData[i * 4 + 1],
-              imagePixelData[i * 4 + 2],
-            );
-            heightValues.push(height);
+          let imageData;
+          try {
+            imageData = await getImageData(new Blob([data]));
+          } catch (error) {
+            console.error('Error during getImageData', error);
+            return res.status(500).send('Error during getImageData');
           }
 
-          const mvtBuffer = await generateGeoJSON(
-            heightValues,
-            width,
-            height,
-            100,
-          );
+          const { width, height, data: imagePixelData } = imageData;
+          let heightValues;
+          try {
+            heightValues = extractHeightValues(imagePixelData, encoding);
+            console.log('heightValues', heightValues); // Add this line to log the heightValues
+          } catch (error) {
+            console.error('Error during extractHeightValues', error);
+            return res.status(500).send('Error during extractHeightValues');
+          }
+
+          let geojsonFeatures;
+          try {
+            geojsonFeatures = await generateGeoJSON(
+              heightValues,
+              width,
+              height,
+              100,
+            );
+            console.log('geojsonFeatures', geojsonFeatures); // Add this line to log the heightValues
+          } catch (error) {
+            console.error('Error during generateGeoJSON', error);
+            return res.status(500).send('Error during generateGeoJSON');
+          }
+
+          let mvtBuffer;
+          try {
+            mvtBuffer = serializeMVT(geojsonFeatures, width, height);
+          } catch (error) {
+            console.error('Error during serializeMVT', error);
+            return res.status(500).send('Error during serializeMVT');
+          }
+
           res.setHeader('Content-Type', 'application/x-protobuf');
-          res.send(mvtBuffer);
+          res.setHeader('Content-Encoding', 'gzip');
+          const gzippedBuffer = await gzipP(mvtBuffer);
+          res.send(gzippedBuffer);
         } catch (error) {
           console.error('Error processing request', error);
           res.status(500).send('Error processing tile');
@@ -320,7 +282,7 @@ export const serve_data = {
     );
 
     app.get(
-      '^/:id/contour/:z([0-9]+)/:x([-.0-9]+)/:y([-.0-9]+)',
+      '^/:id/contour_old/:z([0-9]+)/:x([-.0-9]+)/:y([-.0-9]+)',
       async (req, res, next) => {
         try {
           const item = repo?.[req.params.id];
@@ -514,6 +476,8 @@ export const serve_data = {
           }
           if (data == null) return res.status(204).send();
           if (!data) return res.status(404).send('Not found');
+          if (tileJSON.format === 'pbf')
+            return res.status(400).send('Invalid format');
 
           const image = new Image();
           await new Promise(async (resolve, reject) => {

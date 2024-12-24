@@ -32,13 +32,10 @@ import {
   listFonts,
   getTileUrls,
   isValidHttpUrl,
-  fixTileJSONCenter,
+  fetchTileData,
+  fixTileJSONCenter
 } from './utils.js';
-import {
-  openPMtiles,
-  getPMtilesInfo,
-  getPMtilesTile,
-} from './pmtiles_adapter.js';
+import { openPMtiles, getPMtilesInfo } from './pmtiles_adapter.js';
 import { renderOverlay, renderWatermark, renderAttribution } from './render.js';
 import fsp from 'node:fs/promises';
 import { existsP, gunzipP } from './promises.js';
@@ -78,9 +75,9 @@ const cachedEmptyResponses = {
 
 /**
  * Create an appropriate mlgl response for http errors.
- * @param {string} format The format (a sharp format or 'pbf').
- * @param {string} color The background color (or empty string for transparent).
- * @param {Function} callback The mlgl callback.
+ * @param  format The format (a sharp format or 'pbf').
+ * @param  color The background color (or empty string for transparent).
+ * @param  callback The mlgl callback.
  */
 function createEmptyResponse(format, color, callback) {
   if (!format || format === 'pbf') {
@@ -125,9 +122,9 @@ function createEmptyResponse(format, color, callback) {
 /**
  * Parses coordinate pair provided to pair of floats and ensures the resulting
  * pair is a longitude/latitude combination depending on lnglat query parameter.
- * @param {List} coordinatePair Coordinate pair.
+ * @param  coordinatePair Coordinate pair.
  * @param coordinates
- * @param {object} query Request query parameters.
+ * @param  query Request query parameters.
  */
 const parseCoordinatePair = (coordinates, query) => {
   const firstCoordinate = parseFloat(coordinates[0]);
@@ -149,9 +146,9 @@ const parseCoordinatePair = (coordinates, query) => {
 
 /**
  * Parses a coordinate pair from query arguments and optionally transforms it.
- * @param {List} coordinatePair Coordinate pair.
- * @param {object} query Request query parameters.
- * @param {Function} transformer Optional transform function.
+ * @param  coordinatePair Coordinate pair.
+ * @param  query Request query parameters.
+ * @param  transformer Optional transform function.
  */
 const parseCoordinates = (coordinatePair, query, transformer) => {
   const parsedCoordinates = parseCoordinatePair(coordinatePair, query);
@@ -166,8 +163,8 @@ const parseCoordinates = (coordinatePair, query, transformer) => {
 
 /**
  * Parses paths provided via query into a list of path objects.
- * @param {object} query Request query parameters.
- * @param {Function} transformer Optional transform function.
+ * @param  query Request query parameters.
+ * @param  transformer Optional transform function.
  */
 const extractPathsFromQuery = (query, transformer) => {
   // Initiate paths array
@@ -229,7 +226,7 @@ const extractPathsFromQuery = (query, transformer) => {
  * Options adhere to the following format
  * [optionName]:[optionValue]
  * @param {List[String]} optionsList List of option strings.
- * @param {object} marker Marker object to configure.
+ * @param  marker Marker object to configure.
  */
 const parseMarkerOptions = (optionsList, marker) => {
   for (const options of optionsList) {
@@ -262,9 +259,9 @@ const parseMarkerOptions = (optionsList, marker) => {
 
 /**
  * Parses markers provided via query into a list of marker objects.
- * @param {object} query Request query parameters.
- * @param {object} options Configuration options.
- * @param {Function} transformer Optional transform function.
+ * @param  query Request query parameters.
+ * @param  options Configuration options.
+ * @param  transformer Optional transform function.
  */
 const extractMarkersFromQuery = (query, options, transformer) => {
   // Return an empty list if no markers have been provided
@@ -511,8 +508,6 @@ const respondImage = (
           'WARNING: The formatQuality option is deprecated and has been replaced with formatOptions. Please see the documentation. The values from formatQuality will be used if a quality setting is not provided via formatOptions.',
         );
       }
-      const formatQuality = formatQualities[format];
-
       const formatOptions = (options.formatOptions || {})[format] || {};
 
       if (format === 'png') {
@@ -730,7 +725,6 @@ export const serve_rendered = {
           const overlay = await renderOverlay(
             z, x, y, bearing, pitch, w, h, scale, paths, markers, req.query,
           );
-
           // prettier-ignore
           return respondImage(
             options, item, z, x, y, bearing, pitch, w, h, scale, format, res, overlay, 'static',
@@ -920,99 +914,69 @@ export const serve_rendered = {
                 callback(err, { data: null });
               }
             } else if (protocol === 'mbtiles' || protocol === 'pmtiles') {
-              const parts = req.url.split('/');
-              const sourceId = parts[2];
-              const source = map.sources[sourceId];
-              const sourceType = map.sourceTypes[sourceId];
-              const sourceInfo = styleJSON.sources[sourceId];
-
-              const z = parts[3] | 0;
-              const x = parts[4] | 0;
-              const y = parts[5].split('.')[0] | 0;
-              const format = parts[5].split('.')[1];
-
-              if (sourceType === 'pmtiles') {
-                let tileinfo = await getPMtilesTile(source, z, x, y);
-                let data = tileinfo.data;
-                let headers = tileinfo.header;
-                if (data == undefined) {
-                  if (options.verbose)
-                    console.log('MBTiles error, serving empty', err);
-                  createEmptyResponse(
-                    sourceInfo.format,
-                    sourceInfo.color,
-                    callback,
-                  );
-                  return;
-                } else {
-                  const response = {};
-                  response.data = data;
-                  if (headers['Last-Modified']) {
-                    response.modified = new Date(headers['Last-Modified']);
-                  }
-
-                  if (format === 'pbf') {
-                    if (options.dataDecoratorFunc) {
-                      response.data = options.dataDecoratorFunc(
-                        sourceId,
-                        'data',
-                        response.data,
-                        z,
-                        x,
-                        y,
-                      );
-                    }
-                  }
-
-                  callback(null, response);
-                }
-              } else if (sourceType === 'mbtiles') {
-                source.getTile(z, x, y, async (err, data, headers) => {
-                  if (err) {
-                    if (options.verbose)
-                      console.log('MBTiles error, serving empty', err);
-                    createEmptyResponse(
-                      sourceInfo.format,
-                      sourceInfo.color,
-                      callback,
-                    );
-                    return;
-                  }
-
-                  const response = {};
-                  if (headers['Last-Modified']) {
-                    response.modified = new Date(headers['Last-Modified']);
-                  }
-
-                  if (format === 'pbf') {
-                    try {
-                      response.data = await gunzipP(data);
-                    } catch (err) {
-                      console.log(
-                        'Skipping incorrect header for tile mbtiles://%s/%s/%s/%s.pbf',
-                        id,
-                        z,
-                        x,
-                        y,
-                      );
-                    }
-                    if (options.dataDecoratorFunc) {
-                      response.data = options.dataDecoratorFunc(
-                        sourceId,
-                        'data',
-                        response.data,
-                        z,
-                        x,
-                        y,
-                      );
-                    }
-                  } else {
-                    response.data = data;
-                  }
-
-                  callback(null, response);
-                });
+              const parts = req.url.split('/').filter(Boolean);
+              if (parts.length < 6) {
+                return callback(new Error('Invalid URL format'));
               }
+              const [, , sourceId, z, x, yWithFormat] = parts;
+              const [y, format] = yWithFormat.split('.');
+
+              const source = map.sources?.[sourceId];
+              const sourceType = map.sourceTypes?.[sourceId];
+              const sourceInfo = styleJSON.sources?.[sourceId];
+
+              const zInt = parseInt(z, 10);
+              const xInt = parseInt(x, 10);
+              const yInt = parseInt(y, 10);
+
+              if (!source || !sourceType || !sourceInfo) {
+                return callback(new Error('Invalid source'));
+              }
+              if (isNaN(zInt) || isNaN(xInt) || isNaN(yInt)) {
+                return callback(new Error('Invalid z, x, or y'));
+              }
+
+              let data;
+              try {
+                data = await fetchTileData(
+                  source,
+                  sourceType,
+                  zInt,
+                  xInt,
+                  yInt,
+                );
+              } catch (error) {
+                console.error('Error during fetchTileData', error);
+                return callback(error);
+              }
+
+              if (!data) {
+                if (options.verbose)
+                  console.log('MBTiles error, serving empty');
+                return createEmptyResponse(
+                  sourceInfo.format,
+                  sourceInfo.color,
+                  callback,
+                );
+              }
+
+              const response = { data };
+              if (headers?.['Last-Modified']) {
+                response.modified = new Date(headers['Last-Modified']);
+              }
+
+              if (format === 'pbf' && options.dataDecoratorFunc) {
+                response.data = options.dataDecoratorFunc(
+                  sourceId,
+                  'data',
+                  response.data,
+                  zInt,
+                  xInt,
+                  yInt,
+                );
+              }
+
+              return callback(null, response);
             } else if (protocol === 'http' || protocol === 'https') {
               try {
                 const response = await axios.get(req.url, {
