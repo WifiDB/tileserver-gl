@@ -40,17 +40,23 @@ function tileToBBox(z, x, y) {
 }
 
 /**
- *
- * @param coords
- * @param extent
+ * Transforms coordinates based on the image size and MVT extent.
+ * @param {number[] | number[][]} coords - The coordinates to transform.
+ * @param {number} extent - The target extent for the MVT tile.
+ * @param {number} width - The width of the image.
+ * @param {number} height - The height of the image.
+ * @returns {number[] | number[][]} The transformed coordinates.
  */
-function transformCoords(coords, extent) {
+function transformCoords(coords, extent, width, height) {
+  const scaleX = extent / width;
+  const scaleY = extent / height;
+
   if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
-    const transformedX = coords[0] * 8;
-    const transformedY = coords[1] * 8;
+    const transformedX = coords[0] * scaleX;
+    const transformedY = coords[1] * scaleY;
     return [transformedX, transformedY];
   } else if (Array.isArray(coords)) {
-    return coords.map((coord) => transformCoords(coord, extent));
+    return coords.map((coord) => transformCoords(coord, extent, width, height));
   } else {
     console.warn('Invalid Coordinate:', coords);
     return NaN;
@@ -64,8 +70,10 @@ function transformCoords(coords, extent) {
  * @param x
  * @param y
  * @param extent
+ * @param width
+ * @param height
  */
-export async function serializeMVT(geojson, z, x, y, extent) {
+export async function serializeMVT(geojson, z, x, y, extent, width, height) {
   try {
     if (!geojson || !geojson.features || geojson.features.length === 0) {
       console.error('Error: geojson or geojson.features is empty:', geojson);
@@ -95,6 +103,8 @@ export async function serializeMVT(geojson, z, x, y, extent) {
             const transformedGeometry = transformCoords(
               feature.geometry.coordinates,
               extent,
+              width,
+              height,
             );
 
             return {
@@ -119,9 +129,9 @@ export async function serializeMVT(geojson, z, x, y, extent) {
 /**
  * Generates geojson from height values
  * @param {number[]} heightValues - the array of height values
- * @param {number} width - the width of the image
- * @param {number} height - the height of the image
- * @param {number} step - the contour step value
+ * @param  width - the width of the image
+ * @param  height - the height of the image
+ * @param  step - the contour step value
  * @returns {Promise<object>} - The geojson object
  */
 export async function generateGeoJSON(heightValues, width, height, step) {
@@ -130,7 +140,9 @@ export async function generateGeoJSON(heightValues, width, height, step) {
   const contoursGenerator = contours()
     .size([width, height])
     .thresholds(thresholds);
+
   const contourPolygons = contoursGenerator(heightValues);
+
   const geojsonFeatures = contourPolygons.map((d) => {
     return {
       type: 'Feature',
@@ -138,6 +150,7 @@ export async function generateGeoJSON(heightValues, width, height, step) {
       properties: { elevation: d.value },
     };
   });
+
   return {
     type: 'FeatureCollection',
     features: geojsonFeatures,
@@ -146,11 +159,11 @@ export async function generateGeoJSON(heightValues, width, height, step) {
 
 /**
  * Converts RGB values to height
- * @param {number} r - Red value.
- * @param {number} g - Green value.
- * @param {number} b - Blue value.
+ * @param  r - Red value.
+ * @param  g - Green value.
+ * @param  b - Blue value.
  * @param {'terrarium' | 'mapbox'} [encoding] - The encoding to use.
- * @returns {number} the decoded height.
+ * @returns  the decoded height.
  */
 export function terrainrgb2height(r, g, b, encoding = 'mapbox') {
   if (encoding === 'terrarium') {
@@ -162,7 +175,7 @@ export function terrainrgb2height(r, g, b, encoding = 'mapbox') {
 
 /**
  * Extracts an array of height values from image pixel data
- * @param {Uint8ClampedArray} imagePixelData - The image pixel data.
+ * @param  imagePixelData - The image pixel data.
  * @param {'terrarium' | 'mapbox'} encoding - The encoding type to use.
  * @returns {number[]} - An array of decoded height values.
  */

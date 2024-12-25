@@ -39,7 +39,7 @@ export const GeomType = {
  * @param  tile.layers - An object containing the layers of the tile.
  * @param  tile.layers[id] - An object representing a layer, where id is the name of the layer.
  * @param {Array<object>} tile.layers[id].features - An array of feature objects.
-  * @param  tile.layers[id].extent - The extent of this tile.
+ *  @param  tile.layers[id].extent - The extent of this tile.
  *  @param  tile.extent - The default extent for the tile.
  * @returns  - The serialized MVT as an array of bytes.
  */
@@ -141,7 +141,6 @@ function writeProperties(context, pbf) {
     pbf.writeVarint(keyIndex);
 
     const type = typeof value;
-     // Removed the stringify
     const valueKey = `${type}:${value}`;
 
     let valueIndex = valuecache[valueKey];
@@ -186,30 +185,60 @@ function writeGeometry(feature, pbf) {
   const type = feature.type;
   let x = 0;
   let y = 0;
+
   for (const ring of geometry) {
-    // Flatten the ring array
-    const flatRing = ring.flat(Infinity);
-    let count = 1;
-    if (type === GeomType.POINT) {
-      count = flatRing.length / 2;
-    }
-    pbf.writeVarint(command(1, count)); // moveto
-    // do not write polygon closing path as lineto
-    const length = flatRing.length / 2;
-    const lineCount = type === GeomType.POLYGON ? length - 1 : length;
-    for (let i = 0; i < lineCount; i++) {
-      if (i === 1 && type !== 1) {
-        pbf.writeVarint(command(2, lineCount - 1)); // lineto
+    if (ring.length > 0 && Array.isArray(ring[0])) {
+      // Handle MultiPolygon case
+      for (const polygonRing of ring) {
+        const flatRing = polygonRing.flat(Infinity);
+
+        let count = flatRing.length / 2;
+        if (type === GeomType.POINT) {
+          pbf.writeVarint(command(1, count)); // moveto
+        } else {
+          pbf.writeVarint(command(1, 1)); // moveto
+        }
+
+        for (let i = 0; i < count; i++) {
+          if (type !== GeomType.POINT && i > 0) {
+            pbf.writeVarint(command(2, 1)); // lineto
+          }
+          const dx = flatRing[i * 2] - x;
+          const dy = flatRing[i * 2 + 1] - y;
+          pbf.writeVarint(zigzag(dx));
+          pbf.writeVarint(zigzag(dy));
+          x += dx;
+          y += dy;
+        }
+
+        if (type === GeomType.POLYGON) {
+          pbf.writeVarint(command(7, 1)); // closepath
+        }
       }
-      const dx = flatRing[i * 2] - x;
-      const dy = flatRing[i * 2 + 1] - y;
-      pbf.writeVarint(zigzag(dx));
-      pbf.writeVarint(zigzag(dy));
-      x += dx;
-      y += dy;
-    }
-    if (type === GeomType.POLYGON) {
-      pbf.writeVarint(command(7, 1)); // closepath
+    } else {
+      const flatRing = ring.flat(Infinity);
+      let count = flatRing.length / 2;
+
+      if (type === GeomType.POINT) {
+        pbf.writeVarint(command(1, count)); // moveto
+      } else {
+        pbf.writeVarint(command(1, 1)); // moveto
+      }
+
+      for (let i = 0; i < count; i++) {
+        if (type !== GeomType.POINT && i > 0) {
+          pbf.writeVarint(command(2, 1)); // lineto
+        }
+        const dx = flatRing[i * 2] - x;
+        const dy = flatRing[i * 2 + 1] - y;
+        pbf.writeVarint(zigzag(dx));
+        pbf.writeVarint(zigzag(dy));
+        x += dx;
+        y += dy;
+      }
+      if (type === GeomType.POLYGON) {
+        pbf.writeVarint(command(7, 1)); // closepath
+      }
     }
   }
 }

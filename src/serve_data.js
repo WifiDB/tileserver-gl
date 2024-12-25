@@ -255,7 +255,15 @@ export const serve_data = {
           }
           let mvtBuffer;
           try {
-            mvtBuffer = await serializeMVT(geojson, z, x, y, 4096);
+            mvtBuffer = await serializeMVT(
+              geojson,
+              z,
+              x,
+              y,
+              4096,
+              width,
+              height,
+            );
             console.log('mvtBuffer:', mvtBuffer);
           } catch (error) {
             console.error('Error during serializeMVT', error);
