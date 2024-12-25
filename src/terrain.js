@@ -2,6 +2,7 @@ import { contours } from 'd3-contour';
 import { range, min, max } from 'd3-array';
 import sharp from 'sharp';
 import encodeVectorTile, { GeomType } from './vtpbf.js';
+import { fetchTileData } from './utils.js';
 
 /**
  * Processes image data from a blob.
@@ -43,18 +44,131 @@ function tileToBBox(z, x, y) {
  *
  * @param coords
  * @param extent
+ * @param sourceMinX
+ * @param sourceMinY
+ * @param sourceMaxX
+ * @param sourceMaxY
  */
-function transformCoords(coords, extent) {
+function transformCoords(
+  coords,
+  extent,
+  sourceMinX,
+  sourceMinY,
+  sourceMaxX,
+  sourceMaxY,
+) {
   if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
-    const transformedX = coords[0] * 8;
-    const transformedY = coords[1] * 8;
-    return [transformedX, transformedY];
+    const transformedX = coords[0];
+    const transformedY = coords[1];
+    const scaledX =
+      ((transformedX - sourceMinX) / (sourceMaxX - sourceMinX)) * extent;
+    const scaledY =
+      ((transformedY - sourceMinY) / (sourceMaxY - sourceMinY)) * extent;
+
+    const clippedX = Math.min(Math.max(scaledX, 0), extent);
+    const clippedY = Math.min(Math.max(scaledY, 0), extent);
+
+    return [clippedX, clippedY];
   } else if (Array.isArray(coords)) {
-    return coords.map((coord) => transformCoords(coord, extent));
+    return coords.map((coord) =>
+      transformCoords(
+        coord,
+        extent,
+        sourceMinX,
+        sourceMinY,
+        sourceMaxX,
+        sourceMaxY,
+      ),
+    );
   } else {
     console.warn('Invalid Coordinate:', coords);
     return NaN;
   }
+}
+
+/**
+ *
+ * @param source
+ * @param sourceType
+ * @param z
+ * @param x
+ * @param y
+ * @param encoding
+ */
+export async function combineTiles(source, sourceType, z, x, y, encoding) {
+  const neighbors = [];
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      let data;
+      try {
+        data = await fetchTileData(source, sourceType, z, x + dx, y + dy);
+      } catch (error) {
+        console.error('Error during fetchTileData', error);
+        neighbors.push(null);
+        continue;
+      }
+      if (data == null) {
+        neighbors.push(null);
+        continue;
+      }
+      let imageData;
+      try {
+        imageData = await getImageData(new Blob([data]));
+      } catch (error) {
+        console.error('Error during getImageData', error);
+        neighbors.push(null);
+        continue;
+      }
+      const { width, height, data: imagePixelData } = imageData;
+      let heightValues;
+      try {
+        heightValues = extractHeightValues(imagePixelData, encoding);
+      } catch (error) {
+        console.error('Error during extractHeightValues', error);
+        neighbors.push(null);
+        continue;
+      }
+      neighbors.push({
+        width,
+        height,
+        get: (x, y) => {
+          return heightValues[y * width + x];
+        },
+      });
+    }
+  }
+  const mainTile = neighbors[4];
+  if (!mainTile) {
+    return undefined;
+  }
+  const width = mainTile.width;
+  const height = mainTile.height;
+
+  return {
+    width,
+    height,
+    get: (x, y) => {
+      let gridIdx = 0;
+      if (y < 0) {
+        y += height;
+      } else if (y < height) {
+        gridIdx += 3;
+      } else {
+        y -= height;
+        gridIdx += 6;
+      }
+      if (x < 0) {
+        x += width;
+      } else if (x < width) {
+        gridIdx += 1;
+      } else {
+        x -= width;
+        gridIdx += 2;
+      }
+      const grid = neighbors[gridIdx];
+      return grid ? grid.get(x, y) : NaN;
+    },
+  };
 }
 
 /**
@@ -71,11 +185,15 @@ export async function serializeMVT(geojson, z, x, y, extent) {
       console.error('Error: geojson or geojson.features is empty:', geojson);
       return null;
     }
-
+    const [sourceMinX, sourceMinY, sourceMaxX, sourceMaxY] = tileToBBox(
+      z,
+      x,
+      y,
+    );
     // Convert GeoJSON FeatureCollection to the Tile structure expected by the encoder
     const tile = {
       layers: {
-        contours: {
+        contour: {
           features: geojson.features.map((feature) => {
             let geomType;
             if (feature.geometry.type === 'MultiPolygon') {
@@ -95,6 +213,10 @@ export async function serializeMVT(geojson, z, x, y, extent) {
             const transformedGeometry = transformCoords(
               feature.geometry.coordinates,
               extent,
+              sourceMinX,
+              sourceMinY,
+              sourceMaxX,
+              sourceMaxY,
             );
 
             return {
@@ -108,6 +230,7 @@ export async function serializeMVT(geojson, z, x, y, extent) {
       },
       extent: extent,
     };
+
     const buffer = encodeVectorTile(tile);
     return buffer;
   } catch (error) {

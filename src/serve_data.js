@@ -17,6 +17,7 @@ import {
   serializeMVT,
   extractHeightValues,
   generateGeoJSON,
+  combineTiles,
 } from './terrain.js';
 import {
   fixTileJSONCenter,
@@ -222,37 +223,50 @@ export const serve_data = {
           const x = parseFloat(req.params.x);
           const y = parseFloat(req.params.y);
 
-          let data;
+          let combinedTile;
           try {
-            data = await fetchTileData(source, sourceType, z, x, y);
+            combinedTile = await combineTiles(
+              source,
+              sourceType,
+              z,
+              x,
+              y,
+              encoding,
+            );
+
+            if (!combinedTile) {
+              res
+                .status(404)
+                .send('Data not found for requested source and layer');
+              return;
+            }
           } catch (error) {
-            console.error('Error during fetchTileData', error);
-            return res.status(500).send('Error during fetchTileData');
+            console.error('Error during combineTiles', error);
+            return res.status(500).send('Error during combineTiles');
           }
-          if (data == null) return res.status(204).send();
-          let imageData;
-          try {
-            imageData = await getImageData(new Blob([data]));
-          } catch (error) {
-            console.error('Error during getImageData', error);
-            return res.status(500).send('Error during getImageData');
-          }
-          const { width, height, data: imagePixelData } = imageData;
-          let heightValues;
-          try {
-            heightValues = extractHeightValues(imagePixelData, encoding);
-          } catch (error) {
-            console.error('Error during extractHeightValues', error);
-            return res.status(500).send('Error during extractHeightValues');
-          }
+
           let geojson;
           try {
-            geojson = await generateGeoJSON(heightValues, width, height, 100);
+            const heightValues = Array.from(
+              { length: combinedTile.height },
+              (_, y) =>
+                Array.from({ length: combinedTile.width }, (_, x) =>
+                  combinedTile.get(x, y),
+                ).flat(),
+            ).flat();
+
+            geojson = await generateGeoJSON(
+              heightValues,
+              combinedTile.width,
+              combinedTile.height,
+              100,
+            );
             console.log('handleDataRequest - GeoJSON (contour):', geojson);
           } catch (error) {
             console.error('Error during generateGeoJSON', error);
             return res.status(500).send('Error during generateGeoJSON');
           }
+
           let mvtBuffer;
           try {
             mvtBuffer = await serializeMVT(geojson, z, x, y, 4096);
