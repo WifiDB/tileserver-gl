@@ -46,8 +46,8 @@ function tileToBBox(z, x, y) {
  */
 function transformCoords(coords, extent) {
   if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
-    const transformedX = coords[0] * (extent / 511);
-    const transformedY = coords[1] * (extent / 511);
+    const transformedX = coords[0] * 8;
+    const transformedY = coords[1] * 8;
     return [transformedX, transformedY];
   } else if (Array.isArray(coords)) {
     return coords.map((coord) => transformCoords(coord, extent));
