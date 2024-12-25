@@ -112,16 +112,33 @@
 			"hillshade-exaggeration": 0.8
 		  }
 		},
-		{
-		  "id": "contours",
-		  "type": "line",
-		  "source": "contour",
-		  "source-layer": "contours",
-		  "paint": {
-			"line-opacity": 0.5,
-			"line-width": ["match", ["get", "level"], 1, 1, 0.5]
-		  }
-		}
+     {
+        id: 'contours_line',
+        type: 'line',
+        source: 'contour',
+        'source-layer': 'contours',
+           paint: {
+            'line-color': 'black',
+              'line-width': 1
+          },
+        },
+      {
+            'id': 'contours_fill',
+           'type': 'fill',
+           'source': 'contour',
+           'source-layer': 'contours',
+          'paint': {
+                'fill-color': [
+                  'interpolate',
+                  ['linear'],
+                  ['get', 'elevation'],
+                  -1000, 'rgba(0, 0, 255, 0.2)',
+                  0, 'rgba(0, 255, 0, 0.2)',
+                  1000, 'rgba(255, 0, 0, 0.2)',
+                ],
+                'fill-outline-color':'rgba(0,0,0,0.2)'
+            },
+       }
 	  ]
   };
     {{/is_terrain}}

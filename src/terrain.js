@@ -1,7 +1,7 @@
 import { contours } from 'd3-contour';
 import { range, min, max } from 'd3-array';
 import sharp from 'sharp';
-import vtpbf from 'vt-pbf';
+import encodeVectorTile, { GeomType } from './vtpbf.js';
 
 /**
  * Processes image data from a blob.
@@ -24,24 +24,61 @@ export async function getImageData(blob) {
 }
 
 /**
- * Takes GeoJSON features and creates a Mapbox Vector Tile.
- * @param {object[]} geojsonFeatures - An array of GeoJSON features.
- * @returns  - A buffer containing the MVT data.
+ *
+ * @param geojson
+ * @param z
+ * @param x
+ * @param y
+ * @param tileSize
  */
-export function serializeMVT(geojsonFeatures) {
-  return vtpbf.fromGeojsonVt(
-    geojsonFeatures
-      ? {
-          type: 'FeatureCollection',
-          features: geojsonFeatures,
-        }
-      : { type: 'FeatureCollection', features: [] },
-    {
-      layerName: 'contours',
-    },
-  );
-}
+export async function serializeMVT(geojson, z, x, y, tileSize) {
+  try {
+    if (!geojson || !geojson.features || geojson.features.length === 0) {
+      console.error('Error: geojson or geojson.features is empty:', geojson);
+      return null;
+    }
 
+    // Convert GeoJSON FeatureCollection to the Tile structure expected by the encoder
+    const tile = {
+      layers: {
+        contours: {
+          features: geojson.features.map((feature) => {
+            let geomType;
+            if (feature.geometry.type === 'MultiPolygon') {
+              geomType = GeomType.POLYGON;
+            } else if (feature.geometry.type === 'Point') {
+              geomType = GeomType.POINT;
+            } else if (feature.geometry.type === 'LineString') {
+              geomType = GeomType.LINESTRING;
+            } else {
+              geomType = GeomType.UNKNOWN; // Handle unknown types, log for visibility.
+              console.warn(
+                'Unknown geometry type in GeoJSON:',
+                feature.geometry.type,
+              );
+            }
+
+            const mappedFeature = {
+              type: geomType,
+              properties: feature.properties,
+              geometry: feature.geometry.coordinates,
+            };
+            console.log('Mapped Feature:', mappedFeature); // Add this log
+            return mappedFeature;
+          }),
+          extent: 4096,
+        },
+      },
+      extent: 4096,
+    };
+    console.log('Tile Object:', tile); // Add this log
+    const buffer = encodeVectorTile(tile);
+    return buffer;
+  } catch (error) {
+    console.error('Error in serializeMVT', error);
+    throw error;
+  }
+}
 /**
  * Generates geojson from height values
  * @param {number[]} heightValues - the array of height values
@@ -64,7 +101,10 @@ export async function generateGeoJSON(heightValues, width, height, step) {
       properties: { elevation: d.value },
     };
   });
-  return geojsonFeatures;
+  return {
+    type: 'FeatureCollection',
+    features: geojsonFeatures,
+  };
 }
 
 /**

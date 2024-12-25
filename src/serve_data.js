@@ -181,6 +181,7 @@ export const serve_data = {
       '^/:id/contour/:z([0-9]+)/:x([-.0-9]+)/:y([-.0-9]+)',
       async (req, res, next) => {
         try {
+          // Helper functions
           const item = repo?.[req.params.id];
           if (!item) return res.sendStatus(404);
           if (!item.source) return res.status(404).send('Missing source');
@@ -229,7 +230,6 @@ export const serve_data = {
             return res.status(500).send('Error during fetchTileData');
           }
           if (data == null) return res.status(204).send();
-
           let imageData;
           try {
             imageData = await getImageData(new Blob([data]));
@@ -237,42 +237,35 @@ export const serve_data = {
             console.error('Error during getImageData', error);
             return res.status(500).send('Error during getImageData');
           }
-
           const { width, height, data: imagePixelData } = imageData;
           let heightValues;
           try {
             heightValues = extractHeightValues(imagePixelData, encoding);
-            console.log('heightValues', heightValues); // Add this line to log the heightValues
           } catch (error) {
             console.error('Error during extractHeightValues', error);
             return res.status(500).send('Error during extractHeightValues');
           }
-
-          let geojsonFeatures;
+          let geojson;
           try {
-            geojsonFeatures = await generateGeoJSON(
-              heightValues,
-              width,
-              height,
-              100,
-            );
-            console.log('geojsonFeatures', geojsonFeatures); // Add this line to log the heightValues
+            geojson = await generateGeoJSON(heightValues, width, height, 100);
+            console.log('handleDataRequest - GeoJSON (contour):', geojson);
           } catch (error) {
             console.error('Error during generateGeoJSON', error);
             return res.status(500).send('Error during generateGeoJSON');
           }
-
           let mvtBuffer;
           try {
-            mvtBuffer = serializeMVT(geojsonFeatures, width, height);
+            mvtBuffer = await serializeMVT(geojson);
+            console.log('mvtBuffer:', mvtBuffer);
           } catch (error) {
             console.error('Error during serializeMVT', error);
             return res.status(500).send('Error during serializeMVT');
           }
 
+          const buffer = Buffer.from(mvtBuffer);
+          const gzippedBuffer = await gzipP(buffer);
           res.setHeader('Content-Type', 'application/x-protobuf');
           res.setHeader('Content-Encoding', 'gzip');
-          const gzippedBuffer = await gzipP(mvtBuffer);
           res.send(gzippedBuffer);
         } catch (error) {
           console.error('Error processing request', error);
