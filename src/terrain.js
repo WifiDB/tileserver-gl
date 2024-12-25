@@ -25,13 +25,47 @@ export async function getImageData(blob) {
 
 /**
  *
+ * @param z
+ * @param x
+ * @param y
+ */
+function tileToBBox(z, x, y) {
+  const scale = Math.pow(2, z);
+  const minX = x / scale;
+  const minY = y / scale;
+  const maxX = (x + 1) / scale;
+  const maxY = (y + 1) / scale;
+
+  return [minX, minY, maxX, maxY];
+}
+
+/**
+ *
+ * @param coords
+ * @param extent
+ */
+function transformCoords(coords, extent) {
+  if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+    const transformedX = coords[0] * (extent / 511);
+    const transformedY = coords[1] * (extent / 511);
+    return [transformedX, transformedY];
+  } else if (Array.isArray(coords)) {
+    return coords.map((coord) => transformCoords(coord, extent));
+  } else {
+    console.warn('Invalid Coordinate:', coords);
+    return NaN;
+  }
+}
+
+/**
+ *
  * @param geojson
  * @param z
  * @param x
  * @param y
- * @param tileSize
+ * @param extent
  */
-export async function serializeMVT(geojson, z, x, y, tileSize) {
+export async function serializeMVT(geojson, z, x, y, extent) {
   try {
     if (!geojson || !geojson.features || geojson.features.length === 0) {
       console.error('Error: geojson or geojson.features is empty:', geojson);
@@ -58,20 +92,22 @@ export async function serializeMVT(geojson, z, x, y, tileSize) {
               );
             }
 
-            const mappedFeature = {
+            const transformedGeometry = transformCoords(
+              feature.geometry.coordinates,
+              extent,
+            );
+
+            return {
               type: geomType,
               properties: feature.properties,
-              geometry: feature.geometry.coordinates,
+              geometry: transformedGeometry,
             };
-            console.log('Mapped Feature:', mappedFeature); // Add this log
-            return mappedFeature;
           }),
-          extent: 4096,
+          extent: extent,
         },
       },
-      extent: 4096,
+      extent: extent,
     };
-    console.log('Tile Object:', tile); // Add this log
     const buffer = encodeVectorTile(tile);
     return buffer;
   } catch (error) {
@@ -79,6 +115,7 @@ export async function serializeMVT(geojson, z, x, y, tileSize) {
     throw error;
   }
 }
+
 /**
  * Generates geojson from height values
  * @param {number[]} heightValues - the array of height values
