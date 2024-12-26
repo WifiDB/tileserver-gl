@@ -35,7 +35,6 @@ function tileToBBox(z, x, y) {
   const minY = y / scale;
   const maxX = (x + 1) / scale;
   const maxY = (y + 1) / scale;
-
   return [minX, minY, maxX, maxY];
 }
 
@@ -135,7 +134,7 @@ export async function serializeMVT(geojson, z, x, y, extent, width, height) {
  * @returns {Promise<object>} - The geojson object
  */
 export async function generateGeoJSON(heightValues, width, height, step) {
-  const thresholds = range(min(heightValues) + step, max(heightValues), step);
+  const thresholds = range(-11000, max(heightValues), step);
 
   const contoursGenerator = contours()
     .size([width, height])
