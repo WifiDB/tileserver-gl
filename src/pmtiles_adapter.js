@@ -161,6 +161,7 @@ class PMTilesWebTorrentSource {
 
     return { data: combinedBuffer.buffer };
   }
+
   /**
    * Asynchronously retrieves a slice of data from a specific piece within the torrent.
    * @param {number} pieceIndex - The index of the piece to retrieve.
@@ -170,37 +171,20 @@ class PMTilesWebTorrentSource {
     if (this.downloadedPieces.has(pieceIndex)) {
       return this.downloadedPieces.get(pieceIndex);
     }
-    const file = this.torrent.files[0];
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(
-          new Error(
-            `Failed to get piece after timeout. Piece index: ${pieceIndex}`,
-          ),
-        );
-      }, this.timeoutMs);
 
-      const onDownload = async () => {
-        const start = pieceIndex * this.pieceSize;
-        const end = (pieceIndex + 1) * this.pieceSize;
-        if (file.length >= end) {
-          try {
-            const blob = await file.blob({ start: start, end: end });
-            const arrayBuffer = await blob.arrayBuffer();
-            const buffer = Buffer.from(arrayBuffer);
-            file.removeListener('download', onDownload);
-            clearTimeout(timeout);
-            this.downloadedPieces.set(pieceIndex, buffer);
-            resolve(buffer);
-          } catch (err) {
-            file.removeListener('download', onDownload);
-            clearTimeout(timeout);
-            reject(err);
-          }
-        }
-      };
-      file.on('download', onDownload);
-    });
+    const file = this.torrent.files[0];
+    const start = pieceIndex * this.pieceSize;
+    const end = (pieceIndex + 1) * this.pieceSize;
+
+    try {
+      const blob = await file.blob({ start: start, end: end });
+      const arrayBuffer = await blob.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      this.downloadedPieces.set(pieceIndex, buffer);
+      return buffer;
+    } catch (err) {
+      throw err;
+    }
   }
 
   /**
