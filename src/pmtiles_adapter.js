@@ -74,6 +74,7 @@ class PMTilesWebTorrentSource {
     this.torrent = null;
     this.pieceSize = null;
     this.timeoutMs = timeoutMs;
+    this.downloadedPieces = new Map();
   }
 
   /**
@@ -120,40 +121,77 @@ class PMTilesWebTorrentSource {
     if (!this.torrent) {
       await this.init();
     }
-
     if (!this.pieceSize) {
       throw new Error('Piece size is not available');
     }
+    const startPieceIndex = Math.floor(offset / this.pieceSize);
+    const endPieceIndex = Math.floor((offset + length - 1) / this.pieceSize);
 
+    const dataChunks = [];
+
+    for (let i = startPieceIndex; i <= endPieceIndex; i++) {
+      let pieceBuffer = await this._getPiece(i);
+      if (pieceBuffer) {
+        let chunkOffset = 0;
+        if (i == startPieceIndex) {
+          chunkOffset = offset % this.pieceSize;
+        }
+        let chunkLength = pieceBuffer.length;
+        if (i == endPieceIndex) {
+          chunkLength = (offset + length - 1) % this.pieceSize;
+          if (chunkLength == 0) {
+            chunkLength = pieceBuffer.length;
+          } else {
+            chunkLength += 1;
+          }
+        }
+
+        dataChunks.push(pieceBuffer.slice(chunkOffset, chunkLength));
+      } else {
+        throw new Error(`Piece ${i} could not be retrieved`);
+      }
+    }
+
+    const combinedBuffer = new Uint8Array(length);
+    let offsetInCombined = 0;
+    for (const chunk of dataChunks) {
+      combinedBuffer.set(chunk, offsetInCombined);
+      offsetInCombined += chunk.length;
+    }
+
+    return { data: combinedBuffer.buffer };
+  }
+  /**
+   * Asynchronously retrieves a slice of data from a specific piece within the torrent.
+   * @param {number} pieceIndex - The index of the piece to retrieve.
+   * @returns {Promise<Buffer|null>} A Promise that resolves to a Buffer containing the piece data.
+   */
+  async _getPiece(pieceIndex) {
+    if (this.downloadedPieces.has(pieceIndex)) {
+      return this.downloadedPieces.get(pieceIndex);
+    }
     const file = this.torrent.files[0];
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        file.removeListener('download', onDownload);
         reject(
           new Error(
-            `Failed to get enough data after timeout. File size: ${file.length}, Required: ${offset + length}.`,
+            `Failed to get piece after timeout. Piece index: ${pieceIndex}`,
           ),
         );
       }, this.timeoutMs);
 
       const onDownload = async () => {
-        if (file.length >= offset + length) {
+        const start = pieceIndex * this.pieceSize;
+        const end = (pieceIndex + 1) * this.pieceSize;
+        if (file.length >= end) {
           try {
-            // Get a single byte to prioritize the start of the file
-            await new Promise((resolve) =>
-              file
-                .blob({ start: offset, end: offset + 1 })
-                .then((blob) => resolve()),
-            );
-            const blob = await file.blob({
-              start: offset,
-              end: offset + length,
-            });
+            const blob = await file.blob({ start: start, end: end });
             const arrayBuffer = await blob.arrayBuffer();
             const buffer = Buffer.from(arrayBuffer);
             file.removeListener('download', onDownload);
             clearTimeout(timeout);
-            resolve({ data: buffer.buffer });
+            this.downloadedPieces.set(pieceIndex, buffer);
+            resolve(buffer);
           } catch (err) {
             file.removeListener('download', onDownload);
             clearTimeout(timeout);
