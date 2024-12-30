@@ -3,10 +3,11 @@ import { PMTiles, FetchSource } from 'pmtiles';
 import WebTorrent from 'webtorrent';
 
 const httpTester = /^https?:\/\//i;
-const magnetTester = /^magnet:\?xt=urn:btih:[\w\d]+(&[\w\d]+(=[\w\d%.:\/_-]+)*)*$/i; // Improved regex
+const magnetTester =
+  /^magnet:\?xt=urn:btih:[\w\d]+(&[\w\d]+(=[\w\d%.:\/_-]+)*)*$/i;
 
 /**
- * Represents a PMTiles source that reads from a local file descriptor.
+ * Represents a PMTiles source that reads from a file descriptor.
  */
 class PMTilesFileSource {
   /**
@@ -71,7 +72,6 @@ class PMTilesWebTorrentSource {
     this.client = new WebTorrent();
     this.torrent = null;
     this.pieceSize = null;
-    this.downloadedPieces = new Map(); // Map to store downloaded piece data
   }
 
   /**
@@ -110,65 +110,24 @@ class PMTilesWebTorrentSource {
     if (!this.pieceSize) {
       throw new Error('Piece size is not available');
     }
-    const startPieceIndex = Math.floor(offset / this.pieceSize);
-    const endPieceIndex = Math.floor((offset + length - 1) / this.pieceSize);
 
-    const dataChunks = [];
-
-    for (let i = startPieceIndex; i <= endPieceIndex; i++) {
-      let pieceBuffer = await this._getPiece(i);
-      if (pieceBuffer) {
-        let chunkOffset = 0;
-        if (i == startPieceIndex) {
-          chunkOffset = offset % this.pieceSize;
-        }
-        let chunkLength = pieceBuffer.length;
-        if (i == endPieceIndex) {
-          chunkLength = (offset + length - 1) % this.pieceSize;
-          if (chunkLength == 0) {
-            chunkLength = pieceBuffer.length;
-          } else {
-            chunkLength += 1;
-          }
-        }
-
-        dataChunks.push(pieceBuffer.slice(chunkOffset, chunkLength));
-      } else {
-        throw new Error(`Piece ${i} could not be retrieved`);
-      }
+    const file = this.torrent.files[0];
+    if (file.length < offset + length) {
+      throw new Error(
+        `File is not fully downloaded, only ${file.length} bytes available. Required ${offset + length} bytes.`,
+      );
     }
 
-    const combinedBuffer = new Uint8Array(length);
-    let offsetInCombined = 0;
-    for (const chunk of dataChunks) {
-      combinedBuffer.set(chunk, offsetInCombined);
-      offsetInCombined += chunk.length;
+    try {
+      const blob = await file.blob({ start: offset, end: offset + length });
+      const arrayBuffer = await blob.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      return { data: buffer.buffer };
+    } catch (err) {
+      console.error('Error getting bytes from torrent file:', err);
+      throw err;
     }
-
-    return { data: combinedBuffer.buffer };
   }
-
-  /**
-   * Asynchronously gets a single piece of a torrent.
-   * @param {number} pieceIndex - Piece index
-   * @returns {Promise<Buffer>} Promise that resolves to the piece data buffer.
-   */
-  async _getPiece(pieceIndex) {
-    if (this.downloadedPieces.has(pieceIndex)) {
-      return this.downloadedPieces.get(pieceIndex);
-    }
-
-    return new Promise(async (resolve, reject) => {
-      this.torrent.files[0].getPiece(pieceIndex, (err, pieceBuffer) => {
-        if (err) {
-          return reject(err);
-        }
-        this.downloadedPieces.set(pieceIndex, pieceBuffer);
-        resolve(pieceBuffer);
-      });
-    });
-  }
-
   /**
    * Destroys the WebTorrent client and cleans up resources
    */
@@ -179,7 +138,6 @@ class PMTilesWebTorrentSource {
     }
   }
 }
-
 /**
  * Opens a PMTiles file from a path, URL, or magnet URI
  * @param {string} FilePath - File path, URL, or magnet URI for a pmtiles file
