@@ -75,7 +75,7 @@ class PMTilesWebTorrentSource {
   }
 
   /**
-   * Initializes WebTorrent client and loads the torrent.
+   * Initializes WebTorrent client and loads the torrent, waiting for initial data to be downloaded.
    * @returns {Promise<void>} Promise that resolves when loading is done.
    */
   async init() {
@@ -84,7 +84,18 @@ class PMTilesWebTorrentSource {
         this.torrent = torrent;
         this.pieceSize = torrent.pieceLength;
         console.log('Torrent loaded', torrent.name);
-        resolve();
+
+        // Wait for some data to be downloaded
+        torrent.on('download', () => {
+          if (torrent.progress > 0) {
+            // A small check that makes sure that something is actually downloaded and available.
+            resolve();
+          }
+        });
+        // Reject if the torrent errors during download
+        torrent.on('error', (err) => {
+          reject(err);
+        });
       });
     });
   }
@@ -107,27 +118,44 @@ class PMTilesWebTorrentSource {
     if (!this.torrent) {
       await this.init();
     }
+
     if (!this.pieceSize) {
       throw new Error('Piece size is not available');
     }
 
     const file = this.torrent.files[0];
-    if (file.length < offset + length) {
-      throw new Error(
-        `File is not fully downloaded, only ${file.length} bytes available. Required ${offset + length} bytes.`,
-      );
-    }
 
-    try {
-      const blob = await file.blob({ start: offset, end: offset + length });
-      const arrayBuffer = await blob.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      return { data: buffer.buffer };
-    } catch (err) {
-      console.error('Error getting bytes from torrent file:', err);
-      throw err;
-    }
+    return new Promise((resolve, reject) => {
+      const onDownload = async () => {
+        if (file.length >= offset + length) {
+          try {
+            const blob = await file.blob({
+              start: offset,
+              end: offset + length,
+            });
+            const arrayBuffer = await blob.arrayBuffer();
+            const buffer = Buffer.from(arrayBuffer);
+            file.removeListener('download', onDownload);
+            resolve({ data: buffer.buffer });
+          } catch (err) {
+            file.removeListener('download', onDownload);
+            reject(err);
+          }
+        }
+      };
+      file.on('download', onDownload);
+      // Set a timeout in case the file does not download.
+      const timeout = setTimeout(() => {
+        file.removeListener('download', onDownload);
+        reject(
+          new Error(
+            `Failed to get enough data after timeout. File size: ${file.length}, Required: ${offset + length}.`,
+          ),
+        );
+      }, 20000);
+    });
   }
+
   /**
    * Destroys the WebTorrent client and cleans up resources
    */
@@ -138,6 +166,7 @@ class PMTilesWebTorrentSource {
     }
   }
 }
+
 /**
  * Opens a PMTiles file from a path, URL, or magnet URI
  * @param {string} FilePath - File path, URL, or magnet URI for a pmtiles file
@@ -274,12 +303,8 @@ export function closePMTiles(pmtiles) {
  * @returns {boolean} - True if the string is a valid web-based PMTiles source, false otherwise.
  */
 export function isValidWebPMtiles(source) {
-  console.log(source);
   if (typeof source !== 'string') {
     return false; // Handle non-string inputs
   }
-  console.log(httpTester.test(source));
-  console.log(magnetTester.test(source));
-
   return httpTester.test(source) || magnetTester.test(source);
 }
