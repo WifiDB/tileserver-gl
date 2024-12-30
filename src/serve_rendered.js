@@ -35,7 +35,11 @@ import {
   fixTileJSONCenter,
   fetchTileData,
 } from './utils.js';
-import { openPMtiles, getPMtilesInfo } from './pmtiles_adapter.js';
+import {
+  openPMtiles,
+  getPMtilesInfo,
+  isValidWebPMtiles,
+} from './pmtiles_adapter.js';
 import { renderOverlay, renderWatermark, renderAttribution } from './render.js';
 import fsp from 'node:fs/promises';
 import { existsP, gunzipP } from './promises.js';
@@ -1248,7 +1252,7 @@ export const serve_rendered = {
           process.exit(1);
         }
 
-        if (!isValidHttpUrl(inputFile)) {
+        if (!isValidWebPMtiles(inputFile)) {
           const inputFileStats = await fsp.stat(inputFile);
           if (!inputFileStats.isFile() || inputFileStats.size === 0) {
             throw Error(`Not valid PMTiles file: "${inputFile}"`);

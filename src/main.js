@@ -15,7 +15,7 @@ import { fileURLToPath } from 'url';
 import axios from 'axios';
 import { server } from './server.js';
 import { isValidHttpUrl } from './utils.js';
-import { openPMtiles, getPMtilesInfo } from './pmtiles_adapter.js';
+import { openPMtiles, getPMtilesInfo, isValidWebPMtiles } from './pmtiles_adapter.js';
 import { program } from 'commander';
 import { existsP } from './promises.js';
 import { openMbTilesWrapper } from './mbtiles_wrapper.js';
@@ -97,7 +97,7 @@ const startWithInputFile = async (inputFile) => {
   );
 
   let inputFilePath;
-  if (isValidHttpUrl(inputFile)) {
+  if (isValidWebPMtiles(inputFile)) {
     inputFilePath = process.cwd();
   } else {
     inputFile = path.resolve(process.cwd(), inputFile);
@@ -138,7 +138,7 @@ const startWithInputFile = async (inputFile) => {
       metadata.format === 'pbf' &&
       metadata.name.toLowerCase().indexOf('openmaptiles') > -1
     ) {
-      if (isValidHttpUrl(inputFile)) {
+      if (isValidWebPMtiles(inputFile)) {
         config['data'][`v3`] = {
           pmtiles: inputFile,
         };
@@ -165,7 +165,7 @@ const startWithInputFile = async (inputFile) => {
       console.log(
         `WARN: PMTiles not in "openmaptiles" format. Serving raw data only...`,
       );
-      if (isValidHttpUrl(inputFile)) {
+      if (isValidWebPMtiles(inputFile)) {
         config['data'][(metadata.id || 'pmtiles').replace(/[?/:]/g, '_')] = {
           pmtiles: inputFile,
         };
@@ -184,7 +184,7 @@ const startWithInputFile = async (inputFile) => {
 
     return startServer(null, config);
   } else {
-    if (isValidHttpUrl(inputFile)) {
+    if (isValidWebPMtiles(inputFile)) {
       console.log(
         `ERROR: MBTiles does not support web based files. "${inputFile}" is not a valid data file.`,
       );

@@ -22,7 +22,7 @@ import {
   isValidHttpUrl,
   allowedOptions,
 } from './utils.js';
-
+import { isValidWebPMtiles } from './pmtiles_adapter.js';
 import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -221,7 +221,7 @@ async function start(opts) {
               let id =
                 styleSourceId.substr(0, styleSourceId.lastIndexOf('.')) ||
                 styleSourceId;
-              if (isValidHttpUrl(styleSourceId)) {
+              if (isValidWebPMtiles(styleSourceId)) {
                 id =
                   fnv1a(styleSourceId) + '_' + id.replace(/^.*\/(.*)$/, '$1');
               }
@@ -264,7 +264,7 @@ async function start(opts) {
                   break;
                 }
               }
-              if (!isValidHttpUrl(inputFile)) {
+              if (!isValidWebPMtiles(inputFile)) {
                 inputFile = path.resolve(options.paths[fileType], inputFile);
               }
 

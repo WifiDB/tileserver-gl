@@ -16,7 +16,7 @@ import {
 } from './utils.js';
 import {
   getPMtilesInfo,
-  getPMtilesTile,
+  isValidWebPMtiles,
   openPMtiles,
 } from './pmtiles_adapter.js';
 import { gunzipP, gzipP } from './promises.js';
@@ -158,14 +158,14 @@ export const serve_data = {
     let inputType;
     if (params.pmtiles) {
       inputType = 'pmtiles';
-      if (isValidHttpUrl(params.pmtiles)) {
+      if (isValidWebPMtiles(params.pmtiles)) {
         inputFile = params.pmtiles;
       } else {
         inputFile = path.resolve(options.paths.pmtiles, params.pmtiles);
       }
     } else if (params.mbtiles) {
       inputType = 'mbtiles';
-      if (isValidHttpUrl(params.mbtiles)) {
+      if (isValidWebPMtiles(params.mbtiles)) {
         console.log(
           `ERROR: MBTiles does not support web based files. "${params.mbtiles}" is not a valid data file.`,
         );
@@ -179,7 +179,7 @@ export const serve_data = {
       tiles: params.domains || options.domains,
     };
 
-    if (!isValidHttpUrl(inputFile)) {
+    if (!isValidWebPMtiles(inputFile)) {
       const inputFileStats = await fsp.stat(inputFile);
       if (!inputFileStats.isFile() || inputFileStats.size === 0) {
         throw Error(`Not valid input file: "${inputFile}"`);

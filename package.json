@@ -42,7 +42,8 @@
     "proj4": "2.12.1",
     "sanitize-filename": "1.6.3",
     "sharp": "0.33.5",
-    "tileserver-gl-styles": "2.0.0"
+    "tileserver-gl-styles": "2.0.0",
+    "webtorrent": "^2.5.11"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.5.0",
