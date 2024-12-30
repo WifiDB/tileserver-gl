@@ -122,34 +122,39 @@ class PMTilesWebTorrentSource {
     const endPieceIndex = Math.floor((offset + length - 1) / this.pieceSize);
 
     const dataChunks = [];
+    let offsetInCombined = 0;
 
     for (let i = startPieceIndex; i <= endPieceIndex; i++) {
       let pieceBuffer = await this._getPiece(i);
       if (pieceBuffer) {
         let chunkOffset = 0;
-        if (i == startPieceIndex) {
+        if (i === startPieceIndex) {
           chunkOffset = offset % this.pieceSize;
         }
-        let chunkLength = pieceBuffer.length;
-
+        let sliceLength = pieceBuffer.length;
         if (i === endPieceIndex) {
-          chunkLength = (offset + length) % this.pieceSize;
-          if (chunkLength === 0) {
-            chunkLength = pieceBuffer.length;
+          sliceLength = (offset + length - 1) % this.pieceSize;
+          if (sliceLength === 0) {
+            sliceLength = pieceBuffer.length;
+          } else {
+            sliceLength += 1;
           }
         }
 
-        dataChunks.push(pieceBuffer.slice(chunkOffset, chunkLength));
+        const chunk = pieceBuffer.slice(chunkOffset, sliceLength);
+        dataChunks.push(chunk);
+        offsetInCombined += chunk.length;
       } else {
         throw new Error(`Piece ${i} could not be retrieved`);
       }
     }
 
     const combinedBuffer = new Uint8Array(length);
-    let offsetInCombined = 0;
+
+    let currentOffset = 0;
     for (const chunk of dataChunks) {
-      combinedBuffer.set(chunk, offsetInCombined);
-      offsetInCombined += chunk.length;
+      combinedBuffer.set(chunk, currentOffset);
+      currentOffset += chunk.length;
     }
 
     return { data: combinedBuffer.buffer };
