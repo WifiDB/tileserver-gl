@@ -127,12 +127,14 @@ class PMTilesWebTorrentSource {
     for (let i = startPieceIndex; i <= endPieceIndex; i++) {
       const pieceBuffer = await this._getPiece(i);
       if (pieceBuffer) {
-        const chunkOffset = i === startPieceIndex ? offset % this.pieceSize : 0;
-        const bytesToCopy = Math.min(
+        let chunkOffset = 0;
+        if (i === startPieceIndex) {
+          chunkOffset = offset % this.pieceSize;
+        }
+        let bytesToCopy = Math.min(
           pieceBuffer.length - chunkOffset,
           length - currentOffset,
         );
-
         if (bytesToCopy > 0) {
           const chunk = new Uint8Array(
             pieceBuffer.buffer,
