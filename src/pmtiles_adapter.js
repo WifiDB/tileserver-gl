@@ -87,14 +87,8 @@ class PMTilesWebTorrentSource {
         this.torrent = torrent;
         this.pieceSize = torrent.pieceLength;
         console.log('Torrent loaded', torrent.name);
+        resolve();
 
-        // Wait for some data to be downloaded
-        torrent.on('download', () => {
-          if (torrent.progress > 0) {
-            // A small check that makes sure that something is actually downloaded and available.
-            resolve();
-          }
-        });
         // Reject if the torrent errors during download
         torrent.on('error', (err) => {
           reject(err);
@@ -137,12 +131,11 @@ class PMTilesWebTorrentSource {
           chunkOffset = offset % this.pieceSize;
         }
         let chunkLength = pieceBuffer.length;
-        if (i == endPieceIndex) {
-          chunkLength = (offset + length - 1) % this.pieceSize;
-          if (chunkLength == 0) {
+
+        if (i === endPieceIndex) {
+          chunkLength = (offset + length) % this.pieceSize;
+          if (chunkLength === 0) {
             chunkLength = pieceBuffer.length;
-          } else {
-            chunkLength += 1;
           }
         }
 
