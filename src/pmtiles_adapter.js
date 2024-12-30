@@ -97,17 +97,22 @@ class PMTilesWebTorrentSource {
           this.pieceSize = torrent.pieceLength;
           console.log('Torrent loaded', torrent.name);
 
-          // Wait for some data to be downloaded
-          torrent.on('download', () => {
+          const onDownload = () => {
             if (torrent.progress > 0) {
               // A small check that makes sure that something is actually downloaded and available.
+              torrent.removeListener('download', onDownload);
               resolve();
             }
-          });
-          // Reject if the torrent errors during download
-          torrent.on('error', (err) => {
+          };
+          torrent.on('download', onDownload);
+
+          const onError = (err) => {
+            torrent.removeListener('error', onError);
             reject(err);
-          });
+          };
+
+          // Reject if the torrent errors during download
+          torrent.on('error', onError);
         });
       } catch (err) {
         reject(err);
@@ -175,10 +180,6 @@ class PMTilesWebTorrentSource {
    * @returns {Promise<Buffer|null>} A Promise that resolves to a Buffer containing the piece data.
    */
   async _getPiece(pieceIndex) {
-    if (this.downloadedPieces.has(pieceIndex)) {
-      return this.downloadedPieces.get(pieceIndex);
-    }
-
     const file = this.torrent.files[0];
     const start = pieceIndex * this.pieceSize;
     const end = (pieceIndex + 1) * this.pieceSize;
@@ -186,9 +187,7 @@ class PMTilesWebTorrentSource {
     try {
       const blob = await file.blob({ start: start, end: end });
       const arrayBuffer = await blob.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      this.downloadedPieces.set(pieceIndex, buffer);
-      return buffer;
+      return Buffer.from(arrayBuffer);
     } catch (err) {
       console.error('Error getting piece', pieceIndex, err);
       throw err;
