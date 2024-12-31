@@ -81,11 +81,10 @@ class PMTilesWebTorrentSource {
       torrentPort: 0,
       maxConns: maxConns,
     });
-     this.client.setMaxListeners(50); // Increase the max listeners, as per error suggestion
+    this.client.setMaxListeners(50); // Increase the max listeners, as per error suggestion
     this.torrent = null;
     this.pieceSize = null;
     this.timeoutMs = timeoutMs;
-   
   }
 
   /**
@@ -98,22 +97,22 @@ class PMTilesWebTorrentSource {
         this.client.add(this.torrentIdentifier, (torrent) => {
           this.torrent = torrent;
           this.pieceSize = torrent.pieceLength;
+          this.lastPieceLength = torrent.lastPieceLength;
           console.log('Torrent loaded', torrent.name);
 
-          const onDownload = () => {
-            if (torrent.progress > 0) {
-              // A small check that makes sure that something is actually downloaded and available.
-              torrent.removeListener('download', onDownload);
+          if (torrent.ready) {
+            resolve();
+          } else {
+            const onReady = () => {
+              torrent.removeListener('ready', onReady);
               resolve();
-            }
-          };
-          torrent.on('download', onDownload);
+            };
+            torrent.on('ready', onReady);
+          }
 
           const onError = (err) => {
-            torrent.removeListener('error', onError);
             reject(err);
           };
-
           // Reject if the torrent errors during download
           torrent.on('error', onError);
         });
@@ -151,44 +150,45 @@ class PMTilesWebTorrentSource {
     let combinedOffset = 0;
 
     return new Promise((resolve, reject) => {
-        const onDownload = async () => {
-            if(this.torrent.progress == 0) {
-                return;
-            }
-            try {
-                for (let i = startPieceIndex; i <= endPieceIndex; i++) {
-                   const pieceBuffer = await this._getPiece(i);
-                   if (pieceBuffer) {
-                        let chunkOffset = 0
-                        if(i == startPieceIndex) {
-                            chunkOffset = offset % this.pieceSize
-                        }
-                        let bytesToCopy = pieceBuffer.length - chunkOffset;
-                        if(i == endPieceIndex) {
-                            bytesToCopy = Math.min(bytesToCopy, (offset + length) - (i* this.pieceSize + chunkOffset));
-                       }
-
-                        for (let j = 0; j < bytesToCopy; j++) {
-                          combinedBuffer[combinedOffset] = pieceBuffer[chunkOffset + j];
-                            combinedOffset++;
-                        }
-
-                    } else {
-                       reject(new Error(`Piece ${i} could not be retrieved`))
-                      this.torrent.removeListener('download',onDownload);
-                      return;
-                   }
-                }
-
-                this.torrent.removeListener('download',onDownload)
-                resolve({ data: combinedBuffer.buffer });
-
-            } catch(err) {
-                 this.torrent.removeListener('download',onDownload)
-                reject(err);
-            }
+      const onDownload = async () => {
+        if (this.torrent.progress == 0) {
+          return;
         }
-      this.torrent.on('download', onDownload)
+        try {
+          for (let i = startPieceIndex; i <= endPieceIndex; i++) {
+            const pieceBuffer = await this._getPiece(i);
+            if (pieceBuffer) {
+              let chunkOffset = 0;
+              if (i == startPieceIndex) {
+                chunkOffset = offset % this.pieceSize;
+              }
+              let bytesToCopy = pieceBuffer.length - chunkOffset;
+              if (i == endPieceIndex) {
+                bytesToCopy = Math.min(
+                  bytesToCopy,
+                  offset + length - (i * this.pieceSize + chunkOffset),
+                );
+              }
+
+              for (let j = 0; j < bytesToCopy; j++) {
+                combinedBuffer[combinedOffset] = pieceBuffer[chunkOffset + j];
+                combinedOffset++;
+              }
+            } else {
+              reject(new Error(`Piece ${i} could not be retrieved`));
+              this.torrent.removeListener('download', onDownload);
+              return;
+            }
+          }
+
+          this.torrent.removeListener('download', onDownload);
+          resolve({ data: combinedBuffer.buffer });
+        } catch (err) {
+          this.torrent.removeListener('download', onDownload);
+          reject(err);
+        }
+      };
+      this.torrent.on('download', onDownload);
     });
   }
   /**
@@ -199,13 +199,16 @@ class PMTilesWebTorrentSource {
   async _getPiece(pieceIndex) {
     const file = this.torrent.files[0];
     const start = pieceIndex * this.pieceSize;
-      const isLastPiece = pieceIndex === Math.floor((file.length - 1) / this.pieceSize);
-    const end = isLastPiece ? start + this.lastPieceLength : (pieceIndex + 1) * this.pieceSize;
-     try {
-        const blob = await file.blob({start:start, end: end, buffer: true });
-        const arrayBuffer = await blob.arrayBuffer();
-        return Buffer.from(arrayBuffer);
-    } catch(err) {
+    const isLastPiece =
+      pieceIndex === Math.floor((file.length - 1) / this.pieceSize);
+    const end = isLastPiece
+      ? start + this.lastPieceLength
+      : (pieceIndex + 1) * this.pieceSize;
+    try {
+      const blob = await file.blob({ start: start, end: end, buffer: true });
+      const arrayBuffer = await blob.arrayBuffer();
+      return Buffer.from(arrayBuffer);
+    } catch (err) {
       console.error('Error getting piece', pieceIndex, err);
       throw err;
     }
