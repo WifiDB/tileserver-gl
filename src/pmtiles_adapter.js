@@ -85,7 +85,7 @@ class PMTilesWebTorrentSource {
     this.pieceSize = null;
     this.lastPieceLength = null;
     this.timeoutMs = timeoutMs;
-    this.downloadedPieces = new Map();
+    this.activeRequests = 0;
   }
 
   /**
@@ -98,39 +98,38 @@ class PMTilesWebTorrentSource {
         this.client.add(this.torrentIdentifier, (torrent) => {
           this.torrent = torrent;
           this.pieceSize = torrent.pieceLength;
-           this.lastPieceLength = torrent.lastPieceLength;
+          this.lastPieceLength = torrent.lastPieceLength;
           console.log('Torrent loaded', torrent.name);
-              
+
           const onReady = async () => {
-              torrent.removeListener('ready', onReady);
-              // Kickstart the download by requesting the first piece.
-              try {
-                await this._getPiece(0);
-                 resolve();
-             } catch(err) {
-               reject(err)
-              }
-          };
-           
-            if (torrent.ready) {
-                onReady();
-            } else {
-             torrent.on('ready', onReady);
+            torrent.removeListener('ready', onReady);
+            try {
+              await this._getPiece(0);
+              resolve();
+            } catch (err) {
+              reject(err);
             }
-          
-            const onError = (err) => {
-               torrent.removeListener('error', onError);
-               reject(err)
-            };
-          
-           // Reject if the torrent errors during download
-           torrent.on('error', onError);
-       });
+          };
+          if (torrent.ready) {
+            onReady();
+          } else {
+            torrent.on('ready', onReady);
+          }
+
+          const onError = (err) => {
+            torrent.removeListener('error', onError);
+            reject(err);
+          };
+
+          // Reject if the torrent errors during download
+          torrent.on('error', onError);
+        });
       } catch (err) {
         reject(err);
       }
     });
   }
+
   /**
    * Returns the key of this source (the torrent identifier).
    * @returns {string} - Magnet URI or info hash
@@ -138,6 +137,7 @@ class PMTilesWebTorrentSource {
   getKey() {
     return this.torrentIdentifier;
   }
+
   /**
    * Asynchronously gets a byte range of the torrent file.
    * @param {number} offset - Byte offset
@@ -145,6 +145,11 @@ class PMTilesWebTorrentSource {
    * @returns {Promise<{data: ArrayBuffer}>} - Promise resolving to an object with the data
    */
   async getBytes(offset, length) {
+    this.activeRequests++;
+    if (this.activeRequests === 1) {
+      this.client.throttleDownload(-1); // Use full bandwidth when active
+    }
+
     if (!this.torrent) {
       await this.init();
     }
@@ -179,40 +184,52 @@ class PMTilesWebTorrentSource {
               combinedOffset++;
             }
           } else {
+            this.activeRequests--;
+            if (this.activeRequests === 0) {
+              this.client.throttleDownload(1); // Set to 1 byte/s when not active
+            }
             reject(new Error(`Piece ${i} could not be retrieved`));
             return;
           }
         }
-
+        this.activeRequests--;
+        if (this.activeRequests === 0) {
+          this.client.throttleDownload(1); // Set to 1 byte/s when not active
+        }
         resolve({ data: combinedBuffer.buffer });
       } catch (err) {
-          reject(err)
+        this.activeRequests--;
+        if (this.activeRequests === 0) {
+          this.client.throttleDownload(1); // Set to 1 byte/s when not active
+        }
+        reject(err);
       }
     });
   }
 
+  /**
+   * Asynchronously retrieves a slice of data from a specific piece within the torrent.
+   * @param {number} pieceIndex - The index of the piece to retrieve.
+   * @returns {Promise<Buffer|null>} A Promise that resolves to a Buffer containing the piece data.
+   */
+  async _getPiece(pieceIndex) {
+    const file = this.torrent.files[0];
+    const start = pieceIndex * this.pieceSize;
+    const isLastPiece =
+      pieceIndex === Math.floor((file.length - 1) / this.pieceSize);
+    const end = isLastPiece
+      ? start + this.lastPieceLength
+      : (pieceIndex + 1) * this.pieceSize;
 
-    /**
-     * Asynchronously retrieves a slice of data from a specific piece within the torrent.
-     * @param {number} pieceIndex - The index of the piece to retrieve.
-     * @returns {Promise<Buffer|null>} A Promise that resolves to a Buffer containing the piece data.
-     */
-    async _getPiece(pieceIndex) {
-        const file = this.torrent.files[0];
-         const start = pieceIndex * this.pieceSize;
-          const isLastPiece = pieceIndex === Math.floor((file.length - 1) / this.pieceSize);
-         const end = isLastPiece ? start + this.lastPieceLength : (pieceIndex + 1) * this.pieceSize;
-
-     try {
-          const blob = await file.blob({start:start, end: end, buffer: true });
-          const arrayBuffer = await blob.arrayBuffer();
-          return Buffer.from(arrayBuffer);
-         } catch(err) {
-          console.error("Error getting piece", pieceIndex, err);
-           throw err;
-        }
+    try {
+      const blob = await file.blob({ start: start, end: end, buffer: true });
+      const arrayBuffer = await blob.arrayBuffer();
+      return Buffer.from(arrayBuffer);
+    } catch (err) {
+      console.error('Error getting piece', pieceIndex, err);
+      throw err;
     }
-
+  }
   /**
    * Destroys the WebTorrent client and cleans up resources
    */
@@ -228,7 +245,7 @@ class PMTilesWebTorrentSource {
  * Opens a PMTiles file from a path, URL, or magnet URI
  * @param {string} FilePath - File path, URL, or magnet URI for a pmtiles file
  * @param {number} timeoutMs - Timeout for downloading data in milliseconds, default 300000
-  * @param {number} maxConns - Maximum number of peer connections, default 20
+ *  @param {number} maxConns - Maximum number of peer connections, default 20
  * @returns {PMTiles} PMTiles object for handling data
  */
 export function openPMtiles(FilePath, timeoutMs = 300000, maxConns = 20) {
