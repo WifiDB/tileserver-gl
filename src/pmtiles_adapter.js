@@ -85,7 +85,7 @@ class PMTilesWebTorrentSource {
     this.pieceSize = null;
     this.lastPieceLength = null;
     this.timeoutMs = timeoutMs;
-    this.activeRequests = 0;
+    this.downloadedPieces = new Map();
   }
 
   /**
@@ -104,8 +104,12 @@ class PMTilesWebTorrentSource {
           const onReady = async () => {
             torrent.removeListener('ready', onReady);
             try {
-              await this._getPiece(0);
-              resolve();
+              if (this.torrent.files && this.torrent.files.length > 0) {
+                await this._getPiece(0);
+                resolve();
+              } else {
+                reject(new Error('Torrent has no files'));
+              }
             } catch (err) {
               reject(err);
             }
@@ -129,7 +133,6 @@ class PMTilesWebTorrentSource {
       }
     });
   }
-
   /**
    * Returns the key of this source (the torrent identifier).
    * @returns {string} - Magnet URI or info hash
@@ -145,11 +148,6 @@ class PMTilesWebTorrentSource {
    * @returns {Promise<{data: ArrayBuffer}>} - Promise resolving to an object with the data
    */
   async getBytes(offset, length) {
-    this.activeRequests++;
-    if (this.activeRequests === 1) {
-      this.client.throttleDownload(-1); // Use full bandwidth when active
-    }
-
     if (!this.torrent) {
       await this.init();
     }
@@ -161,7 +159,6 @@ class PMTilesWebTorrentSource {
 
     const combinedBuffer = Buffer.alloc(length);
     let combinedOffset = 0;
-
     return new Promise(async (resolve, reject) => {
       try {
         for (let i = startPieceIndex; i <= endPieceIndex; i++) {
@@ -178,30 +175,17 @@ class PMTilesWebTorrentSource {
                 offset + length - (i * this.pieceSize + chunkOffset),
               );
             }
-
             for (let j = 0; j < bytesToCopy; j++) {
               combinedBuffer[combinedOffset] = pieceBuffer[chunkOffset + j];
               combinedOffset++;
             }
           } else {
-            this.activeRequests--;
-            if (this.activeRequests === 0) {
-              this.client.throttleDownload(1); // Set to 1 byte/s when not active
-            }
             reject(new Error(`Piece ${i} could not be retrieved`));
             return;
           }
         }
-        this.activeRequests--;
-        if (this.activeRequests === 0) {
-          this.client.throttleDownload(1); // Set to 1 byte/s when not active
-        }
         resolve({ data: combinedBuffer.buffer });
       } catch (err) {
-        this.activeRequests--;
-        if (this.activeRequests === 0) {
-          this.client.throttleDownload(1); // Set to 1 byte/s when not active
-        }
         reject(err);
       }
     });
@@ -214,6 +198,9 @@ class PMTilesWebTorrentSource {
    */
   async _getPiece(pieceIndex) {
     const file = this.torrent.files[0];
+    if (!file) {
+      throw new Error('_getPiece file is not available');
+    }
     const start = pieceIndex * this.pieceSize;
     const isLastPiece =
       pieceIndex === Math.floor((file.length - 1) / this.pieceSize);
@@ -230,6 +217,7 @@ class PMTilesWebTorrentSource {
       throw err;
     }
   }
+
   /**
    * Destroys the WebTorrent client and cleans up resources
    */
@@ -241,28 +229,62 @@ class PMTilesWebTorrentSource {
   }
 }
 
+const torrentSources = new Map();
+
 /**
  * Opens a PMTiles file from a path, URL, or magnet URI
  * @param {string} FilePath - File path, URL, or magnet URI for a pmtiles file
  * @param {number} timeoutMs - Timeout for downloading data in milliseconds, default 300000
- *  @param {number} maxConns - Maximum number of peer connections, default 20
+ * @param {number} maxConns - Maximum number of peer connections, default 20
  * @returns {PMTiles} PMTiles object for handling data
  */
 export function openPMtiles(FilePath, timeoutMs = 300000, maxConns = 20) {
   let pmtiles = undefined;
   let source = undefined;
-  if (magnetTester.test(FilePath)) {
-    source = new PMTilesWebTorrentSource(FilePath, timeoutMs, maxConns);
+
+  const torrentIdentifier = magnetTester.test(FilePath) ? FilePath : undefined;
+
+  if (torrentIdentifier) {
+    return new Promise(async (resolve) => {
+      if (torrentSources.has(torrentIdentifier)) {
+        source = torrentSources.get(torrentIdentifier);
+        pmtiles = new PMTiles(source);
+        // Add the source to PMTiles for cleanup
+        pmtiles._source = source;
+        resolve(pmtiles);
+      } else {
+        source = new PMTilesWebTorrentSource(
+          torrentIdentifier,
+          timeoutMs,
+          maxConns,
+        );
+        try {
+          await source.init();
+          torrentSources.set(torrentIdentifier, source);
+          pmtiles = new PMTiles(source);
+          // Add the source to PMTiles for cleanup
+          pmtiles._source = source;
+          resolve(pmtiles);
+        } catch (err) {
+          console.error('error in init', err);
+          throw err;
+        }
+      }
+    });
   } else if (httpTester.test(FilePath)) {
     source = new FetchSource(FilePath);
+    pmtiles = new PMTiles(source);
+    // Add the source to PMTiles for cleanup
+    pmtiles._source = source;
+    return pmtiles;
   } else {
     const fd = fs.openSync(FilePath, 'r');
     source = new PMTilesFileSource(fd);
+    pmtiles = new PMTiles(source);
+    // Add the source to PMTiles for cleanup
+    pmtiles._source = source;
+    return pmtiles;
   }
-  pmtiles = new PMTiles(source);
-  // Add the source to PMTiles for cleanup
-  pmtiles._source = source;
-  return pmtiles;
 }
 
 /**
