@@ -189,7 +189,7 @@ export const serve_data = {
     let source;
     let sourceType;
     if (inputType === 'pmtiles') {
-      source = openPMtiles(inputFile);
+      source = await openPMtiles(inputFile);
       sourceType = 'pmtiles';
       const metadata = await getPMtilesInfo(source);
 

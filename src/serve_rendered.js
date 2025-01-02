@@ -1260,7 +1260,7 @@ export const serve_rendered = {
         }
 
         if (sourceType === 'pmtiles') {
-          map.sources[name] = openPMtiles(inputFile);
+          map.sources[name] = await openPMtiles(inputFile);
           map.sourceTypes[name] = 'pmtiles';
           const metadata = await getPMtilesInfo(map.sources[name]);
 

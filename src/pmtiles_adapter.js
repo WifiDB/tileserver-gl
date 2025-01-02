@@ -87,7 +87,6 @@ class PMTilesWebTorrentSource {
     this.timeoutMs = timeoutMs;
     this.downloadedPieces = new Map();
   }
-
   /**
    * Initializes WebTorrent client and loads the torrent, waiting for initial data to be downloaded.
    * @returns {Promise<void>} Promise that resolves when loading is done.
@@ -100,7 +99,6 @@ class PMTilesWebTorrentSource {
           this.pieceSize = torrent.pieceLength;
           this.lastPieceLength = torrent.lastPieceLength;
           console.log('Torrent loaded', torrent.name);
-
           const onReady = async () => {
             torrent.removeListener('ready', onReady);
             try {
@@ -122,9 +120,9 @@ class PMTilesWebTorrentSource {
 
           const onError = (err) => {
             torrent.removeListener('error', onError);
+            this.destroy(); // DESTROY THE TORRENT WHEN IT FAILS
             reject(err);
           };
-
           // Reject if the torrent errors during download
           torrent.on('error', onError);
         });
@@ -133,6 +131,7 @@ class PMTilesWebTorrentSource {
       }
     });
   }
+
   /**
    * Returns the key of this source (the torrent identifier).
    * @returns {string} - Magnet URI or info hash
@@ -230,60 +229,37 @@ class PMTilesWebTorrentSource {
 }
 
 const torrentSources = new Map();
-
 /**
  * Opens a PMTiles file from a path, URL, or magnet URI
  * @param {string} FilePath - File path, URL, or magnet URI for a pmtiles file
  * @param {number} timeoutMs - Timeout for downloading data in milliseconds, default 300000
  * @param {number} maxConns - Maximum number of peer connections, default 20
- * @returns {PMTiles} PMTiles object for handling data
+ * @returns {Promise<PMTiles>} PMTiles object for handling data
  */
 export function openPMtiles(FilePath, timeoutMs = 300000, maxConns = 20) {
-  let pmtiles = undefined;
   let source = undefined;
-
   const torrentIdentifier = magnetTester.test(FilePath) ? FilePath : undefined;
 
   if (torrentIdentifier) {
-    return new Promise(async (resolve) => {
-      if (torrentSources.has(torrentIdentifier)) {
-        source = torrentSources.get(torrentIdentifier);
-        pmtiles = new PMTiles(source);
-        // Add the source to PMTiles for cleanup
-        pmtiles._source = source;
-        resolve(pmtiles);
-      } else {
-        source = new PMTilesWebTorrentSource(
-          torrentIdentifier,
-          timeoutMs,
-          maxConns,
-        );
-        try {
-          await source.init();
-          torrentSources.set(torrentIdentifier, source);
-          pmtiles = new PMTiles(source);
-          // Add the source to PMTiles for cleanup
-          pmtiles._source = source;
-          resolve(pmtiles);
-        } catch (err) {
+    source = new PMTilesWebTorrentSource(FilePath, timeoutMs, maxConns);
+    return new Promise((resolve, reject) => {
+      source
+        .init()
+        .then(() => {
+          resolve(new PMTiles(source));
+        })
+        .catch((err) => {
           console.error('error in init', err);
-          throw err;
-        }
-      }
+          reject(err);
+        });
     });
   } else if (httpTester.test(FilePath)) {
     source = new FetchSource(FilePath);
-    pmtiles = new PMTiles(source);
-    // Add the source to PMTiles for cleanup
-    pmtiles._source = source;
-    return pmtiles;
+    return Promise.resolve(new PMTiles(source));
   } else {
     const fd = fs.openSync(FilePath, 'r');
     source = new PMTilesFileSource(fd);
-    pmtiles = new PMTiles(source);
-    // Add the source to PMTiles for cleanup
-    pmtiles._source = source;
-    return pmtiles;
+    return Promise.resolve(new PMTiles(source));
   }
 }
 
