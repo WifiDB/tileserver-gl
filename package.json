@@ -1,5 +1,5 @@
 {
-  "name": "tileserver-gl",
+  "name": "@acalcutt/tileserver-gl",
   "version": "5.4.0-pre.1",
   "description": "Map tile server for JSON GL styles - vector and server side generated raster tiles",
   "main": "src/main.js",
@@ -88,7 +88,7 @@
     "yaml-lint": "^1.7.0"
   },
   "keywords": [
-    "maptiler",
+    "wifidb",
     "tileserver-gl",
     "maplibre-gl",
     "tileserver"
@@ -98,11 +98,11 @@
     "node": ">=18.17.0 <23"
   },
   "repository": {
-    "url": "git+https://github.com/maptiler/tileserver-gl.git",
+    "url": "git+https://github.com/wifidb/tileserver-gl.git",
     "type": "git"
   },
   "bugs": {
-    "url": "https://github.com/maptiler/tileserver-gl/issues"
+    "url": "https://github.com/wifidb/tileserver-gl/issues"
   },
-  "homepage": "https://github.com/maptiler/tileserver-gl#readme"
+  "homepage": "https://github.com/wifidb/tileserver-gl#readme"
 }
