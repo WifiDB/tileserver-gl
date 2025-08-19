@@ -13,7 +13,8 @@ on:
         description: 'NPM Token'
         required: true
 
-permissions: write-all
+permissions:
+  contents: write
 
 env:
   DOCKER_IMAGE_NAME: wifidb/tileserver-gl
