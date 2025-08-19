@@ -14,8 +14,8 @@ on:
         required: true
 
 env:
-  DOCKER_IMAGE_NAME: maptiler/tileserver-gl
-  LOCAL_LIGHT_IMAGE_NAME: maptiler/tileserver-gl-light
+  DOCKER_IMAGE_NAME: wifidb/tileserver-gl
+  LOCAL_LIGHT_IMAGE_NAME: wifidb/tileserver-gl-light
 
 jobs:
   release-check:
