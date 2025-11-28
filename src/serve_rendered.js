@@ -8,7 +8,7 @@
 //  > terminate called after throwing an instance of 'std::runtime_error'
 //  > what():  Cannot read GLX extensions.
 import { Image, createCanvas } from 'canvas';
-import '@maplibre/maplibre-gl-native';
+import '@acalcutt/maplibre-gl-native-test';
 //
 // SECTION END
 
@@ -21,7 +21,7 @@ import Color from 'color';
 import express from 'express';
 import sanitize from 'sanitize-filename';
 import { SphericalMercator } from '@mapbox/sphericalmercator';
-import mlgl from '@maplibre/maplibre-gl-native';
+import mlgl from '@acalcutt/maplibre-gl-native-test';
 import polyline from '@mapbox/polyline';
 import proj4 from 'proj4';
 import {
@@ -1517,41 +1517,6 @@ export const serve_rendered = {
             );
           }
           layer.paint['fill-extrusion-base'] = 0;
-        }
-
-        // --- Remove hillshade properties incompatible with MapLibre Native ---
-        const hillshadePropertiesToRemove = [
-          'hillshade-method',
-          'hillshade-illumination-direction',
-          'hillshade-highlight-color',
-        ];
-
-        for (const prop of hillshadePropertiesToRemove) {
-          if (prop in layer.paint) {
-            if (verbose) {
-              console.warn(
-                `Warning: Layer '${layerIdForWarning}' in style '${id}' has property '${prop}'. ` +
-                  `This property is not supported by MapLibre Native. ` +
-                  `It will be removed in rendered images. ` +
-                  `Note: This property will still work with MapLibre GL JS vector maps.`,
-              );
-            }
-            // eslint-disable-next-line security/detect-object-injection -- prop is from hillshadePropertiesToRemove array, validated property names
-            delete layer.paint[prop];
-          }
-        }
-
-        // --- Remove 'hillshade-shadow-color' if it is an array. It can only be a string in MapLibre Native ---
-        if (Array.isArray(layer.paint['hillshade-shadow-color'])) {
-          if (verbose) {
-            console.warn(
-              `Warning: Layer '${layerIdForWarning}' in style '${id}' has property 'hillshade-shadow-color'. ` +
-                `An array value is not supported by MapLibre Native for this property (expected string/color). ` +
-                `It will be removed in rendered images. ` +
-                `Note: Using an array for this property will still work with MapLibre GL JS vector maps.`,
-            );
-          }
-          delete layer.paint['hillshade-shadow-color'];
         }
       }
     }
