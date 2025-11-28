@@ -121,7 +121,6 @@ export const serve_data = {
 
       if (isGzipped) {
         data = await gunzipP(data);
-        isGzipped = false;
       }
 
       if (tileJSONFormat === 'pbf') {
@@ -164,9 +163,7 @@ export const serve_data = {
       headers['Content-Encoding'] = 'gzip';
       res.set(headers);
 
-      if (!isGzipped) {
-        data = await gzipP(data);
-      }
+      data = await gzipP(data);
 
       return res.status(200).send(data);
     });
@@ -392,6 +389,7 @@ export const serve_data = {
         params.s3Profile,
         params.requestPayer,
         params.s3Region,
+        params.s3UrlFormat,
         verbose,
       );
       sourceType = 'pmtiles';

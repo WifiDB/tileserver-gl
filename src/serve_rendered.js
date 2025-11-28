@@ -531,30 +531,43 @@ async function respondImage(
     pool = item.map.renderersStatic[scale];
   }
 
+  if (!pool) {
+    console.error(`Pool not found for scale ${scale}, mode ${mode}`);
+    return res.status(500).send('Renderer pool not configured');
+  }
+
   pool.acquire(async (err, renderer) => {
     // Check if pool.acquire failed or returned null/invalid renderer
     if (err) {
       console.error('Failed to acquire renderer from pool:', err);
-      return res.status(503).send('Renderer pool error');
+      if (!res.headersSent) {
+        return res.status(503).send('Renderer pool error');
+      }
+      return;
     }
 
     if (!renderer) {
       console.error(
         'Renderer is null - likely crashed or failed to initialize',
       );
-      return res.status(503).send('Renderer unavailable');
+      if (!res.headersSent) {
+        return res.status(503).send('Renderer unavailable');
+      }
+      return;
     }
 
     // Validate renderer has required methods (basic health check)
     if (typeof renderer.render !== 'function') {
       console.error('Renderer is invalid - missing render method');
-      // Destroy the bad renderer and remove from pool
       try {
-        pool.destroy(renderer);
+        pool.removeBadObject(renderer);
       } catch (e) {
-        console.error('Error destroying invalid renderer:', e);
+        console.error('Error removing bad renderer:', e);
       }
-      return res.status(503).send('Renderer invalid');
+      if (!res.headersSent) {
+        return res.status(503).send('Renderer invalid');
+      }
+      return;
     }
 
     // For 512px tiles, use the actual maplibre-native zoom. For 256px tiles, use zoom - 1
@@ -588,13 +601,14 @@ async function respondImage(
 
     // Set a timeout for the render operation to detect hung renderers
     const renderTimeout = setTimeout(() => {
-      console.error('Renderer timeout - destroying potentially hung renderer');
+      console.error('Renderer timeout - destroying hung renderer');
+
       try {
-        // Don't release back to pool, destroy it
-        pool.destroy(renderer);
+        pool.removeBadObject(renderer);
       } catch (e) {
-        console.error('Error destroying timed-out renderer:', e);
+        console.error('Error removing timed-out renderer:', e);
       }
+
       if (!res.headersSent) {
         res.status(503).send('Renderer timeout');
       }
@@ -604,13 +618,17 @@ async function respondImage(
       renderer.render(params, (err, data) => {
         clearTimeout(renderTimeout);
 
+        if (res.headersSent) {
+          // Timeout already fired and sent response, don't process
+          return;
+        }
+
         if (err) {
           console.error('Render error:', err);
-          // Destroy renderer instead of releasing it back to pool since it may be corrupted
           try {
-            pool.destroy(renderer);
+            pool.removeBadObject(renderer);
           } catch (e) {
-            console.error('Error destroying failed renderer:', e);
+            console.error('Error removing failed renderer:', e);
           }
           if (!res.headersSent) {
             return res
@@ -646,12 +664,11 @@ async function respondImage(
             height: height * scale,
           });
         }
-        // HACK(Part 2) 256px tiles are a zoom level lower than maplibre-native default tiles. this hack allows tileserver-gl to support zoom 0 256px tiles, which would actually be zoom -1 in maplibre-native. Since zoom -1 isn't supported, a double sized zoom 0 tile is requested and resized here.
 
+        // HACK(Part 2) 256px tiles are a zoom level lower than maplibre-native default tiles. this hack allows tileserver-gl to support zoom 0 256px tiles, which would actually be zoom -1 in maplibre-native. Since zoom -1 isn't supported, a double sized zoom 0 tile is requested and resized here.
         if (z === 0 && width === 256) {
           image.resize(width * scale, height * scale);
         }
-        // END HACK(Part 2)
 
         const composites = [];
         if (overlay) {
@@ -659,7 +676,6 @@ async function respondImage(
         }
         if (item.watermark) {
           const canvas = renderWatermark(width, height, scale, item.watermark);
-
           composites.push({ input: canvas.toBuffer() });
         }
 
@@ -670,7 +686,6 @@ async function respondImage(
             scale,
             item.staticAttributionText,
           );
-
           composites.push({ input: canvas.toBuffer() });
         }
 
@@ -687,7 +702,6 @@ async function respondImage(
         }
         // eslint-disable-next-line security/detect-object-injection -- format is validated above
         const formatQuality = formatQualities[format];
-
         // eslint-disable-next-line security/detect-object-injection -- format is validated above
         const formatOptions = (options.formatOptions || {})[format] || {};
 
@@ -710,25 +724,32 @@ async function respondImage(
         } else if (format === 'webp') {
           image.webp({ quality: formatOptions.quality || formatQuality || 90 });
         }
+
         image.toBuffer((err, buffer, info) => {
-          if (!buffer) {
-            return res.status(404).send('Not found');
+          if (err || !buffer) {
+            console.error('Sharp error:', err);
+            if (!res.headersSent) {
+              return res.status(500).send('Image processing failed');
+            }
+            return;
           }
 
-          res.set({
-            'Last-Modified': item.lastModified,
-            'Content-Type': `image/${format}`,
-          });
-          return res.status(200).send(buffer);
+          if (!res.headersSent) {
+            res.set({
+              'Last-Modified': item.lastModified,
+              'Content-Type': `image/${format}`,
+            });
+            return res.status(200).send(buffer);
+          }
         });
       });
     } catch (error) {
       clearTimeout(renderTimeout);
       console.error('Unexpected error during render:', error);
       try {
-        pool.destroy(renderer);
+        pool.removeBadObject(renderer);
       } catch (e) {
-        console.error('Error destroying renderer after error:', e);
+        console.error('Error removing renderer after error:', e);
       }
       if (!res.headersSent) {
         return res.status(500).send('Render failed');
@@ -1594,6 +1615,7 @@ export const serve_rendered = {
         let s3Profile;
         let requestPayer;
         let s3Region;
+        let s3UrlFormat;
         const dataInfo = dataResolver(dataId);
         if (dataInfo.inputFile) {
           inputFile = dataInfo.inputFile;
@@ -1602,6 +1624,7 @@ export const serve_rendered = {
           s3Profile = dataInfo.s3Profile;
           requestPayer = dataInfo.requestPayer;
           s3Region = dataInfo.s3Region;
+          s3UrlFormat = dataInfo.s3UrlFormat;
         } else {
           console.error(`ERROR: data "${inputFile}" not found!`);
           process.exit(1);
@@ -1622,6 +1645,7 @@ export const serve_rendered = {
             s3Profile,
             requestPayer,
             s3Region,
+            s3UrlFormat,
             verbose,
           );
           // eslint-disable-next-line security/detect-object-injection -- name is from style sources object keys
