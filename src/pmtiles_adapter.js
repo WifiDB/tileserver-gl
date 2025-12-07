@@ -18,7 +18,7 @@ class S3Source {
    * @param {boolean} [configRequestPayer] - Optional flag from config for requester pays buckets.
    * @param {string} [configRegion] - Optional AWS region from config.
    * @param {string} [s3UrlFormat] - Optional S3 URL format from config: 'aws' or 'custom'.
-   * @param {boolean} [verbose] - Whether to show verbose logging.
+   * @param {number} [verbose] - Verbosity level (1-3). 1=important, 2=detailed, 3=debug/all requests.
    */
   constructor(
     s3Url,
@@ -147,7 +147,7 @@ class S3Source {
    * @param {string|null} endpoint - The custom endpoint URL, or null for default AWS S3.
    * @param {string} region - The AWS region.
    * @param {string} [profile] - Optional AWS credential profile name.
-   * @param {boolean} [verbose] - Whether to show verbose logging.
+   * @param {number} [verbose] - Verbosity level (1-3). 1=important, 2=detailed, 3=debug/all requests.
    * @returns {S3Client} - Configured S3Client instance.
    */
   createS3Client(endpoint, region, profile, verbose) {
@@ -308,14 +308,18 @@ async function readFileBytes(fd, buffer, offset) {
   });
 }
 
+// Cache for PMTiles objects to avoid creating multiple instances for the same URL
+const pmtilesCache = new Map();
+
 /**
  * Opens a PMTiles file from local filesystem, HTTP URL, or S3 URL.
+ * Uses caching to avoid creating multiple PMTiles instances for the same file.
  * @param {string} filePath - The path to the PMTiles file.
  * @param {string} [s3Profile] - Optional AWS credential profile name.
  * @param {boolean} [requestPayer] - Optional flag for requester pays buckets.
  * @param {string} [s3Region] - Optional AWS region.
  * @param {string} [s3UrlFormat] - Optional S3 URL format: 'aws' or 'custom'.
- * @param {boolean} [verbose] - Whether to show verbose logging.
+ * @param {number} [verbose] - Verbosity level (1-3). 1=important, 2=detailed, 3=debug/all requests.
  * @returns {PMTiles} - A PMTiles instance.
  */
 export function openPMtiles(
@@ -326,6 +330,23 @@ export function openPMtiles(
   s3UrlFormat,
   verbose = 0,
 ) {
+  // Create a cache key that includes all parameters that affect the source
+  const cacheKey = JSON.stringify({
+    filePath,
+    s3Profile,
+    requestPayer,
+    s3Region,
+    s3UrlFormat,
+  });
+
+  // Check if we already have a PMTiles object for this configuration
+  if (pmtilesCache.has(cacheKey)) {
+    if (verbose >= 2) {
+      console.log(`Using cached PMTiles instance for: ${filePath}`);
+    }
+    return pmtilesCache.get(cacheKey);
+  }
+
   let pmtiles = undefined;
 
   if (isS3Url(filePath)) {
@@ -356,6 +377,9 @@ export function openPMtiles(
     const source = new PMTilesFileSource(fd);
     pmtiles = new PMTiles(source);
   }
+
+  // Cache the PMTiles object
+  pmtilesCache.set(cacheKey, pmtiles);
 
   return pmtiles;
 }

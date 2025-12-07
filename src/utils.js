@@ -493,8 +493,7 @@ export async function fetchTileData(source, sourceType, z, x, y) {
   } else if (sourceType === 'mbtiles') {
     return new Promise((resolve) => {
       source.getTile(z, x, y, (err, tileData, tileHeader) => {
-        if (err) {
-          console.error('Error fetching MBTiles tile:', err);
+        if (err || tileData == null) {
           return resolve(null);
         }
         resolve({ data: tileData, headers: tileHeader });

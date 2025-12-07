@@ -1094,7 +1094,7 @@ export const serve_rendered = {
             (!p1 && p2 === 'static') || (p1 === 'static' && p2 === 'raw')
               ? 'static'
               : 'tile';
-          if (verbose) {
+          if (verbose >= 3) {
             console.log(
               `Handling rendered %s request for: /styles/%s%s/%s/%s/%s%s.%s`,
               requestType,
@@ -1154,7 +1154,7 @@ export const serve_rendered = {
         return res.sendStatus(404);
       }
       const tileSize = parseInt(req.params.tileSize, 10) || undefined;
-      if (verbose) {
+      if (verbose >= 3) {
         console.log(
           `Handling rendered tilejson request for: /styles/%s%s.json`,
           req.params.tileSize
@@ -1205,11 +1205,16 @@ export const serve_rendered = {
       renderersStatic: [],
       sources: {},
       sourceTypes: {},
+      sparseFlags: {},
     };
 
-    const { publicUrl, verbose } = programOpts;
+    const { publicUrl, verbose, fetchTimeout } = programOpts;
 
     const styleJSON = clone(style);
+
+    // Global sparse flag for HTTP/remote sources (from config options)
+    const globalSparse = options.sparse ?? true;
+
     /**
      * Creates a pool of renderers.
      * @param {number} ratio Pixel ratio
@@ -1231,7 +1236,7 @@ export const serve_rendered = {
           ratio,
           request: async (req, callback) => {
             const protocol = req.url.split(':')[0];
-            if (verbose && verbose >= 3) {
+            if (verbose >= 3) {
               console.log('Handling request:', req);
             }
             if (protocol === 'sprites') {
@@ -1287,22 +1292,18 @@ export const serve_rendered = {
                 x,
                 y,
               );
-              if (fetchTile == null && sourceInfo.sparse == true) {
-                if (verbose) {
-                  console.log(
-                    'fetchTile warning on %s, sparse response',
-                    req.url,
-                  );
+              if (fetchTile == null) {
+                if (verbose >= 2) {
+                  console.log('fetchTile null on %s', req.url);
                 }
-                callback();
-                return;
-              } else if (fetchTile == null) {
-                if (verbose) {
-                  console.log(
-                    'fetchTile error on %s, serving empty response',
-                    req.url,
-                  );
+                // eslint-disable-next-line security/detect-object-injection -- sourceId from internal style source names
+                const sparse = map.sparseFlags[sourceId] ?? true;
+                // sparse=true (default) -> return empty callback so MapLibre can overzoom
+                if (sparse) {
+                  callback();
+                  return;
                 }
+                // sparse=false -> 204 (empty tile, no overzoom) - create blank response
                 createEmptyResponse(
                   sourceInfo.format,
                   sourceInfo.color,
@@ -1341,40 +1342,58 @@ export const serve_rendered = {
 
               callback(null, response);
             } else if (protocol === 'http' || protocol === 'https') {
-              try {
-                // Add timeout to prevent hanging on unreachable hosts
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+              const controller = new AbortController();
+              const timeoutMs = (fetchTimeout && Number(fetchTimeout)) || 15000;
+              let timeoutId;
 
+              try {
+                timeoutId = setTimeout(() => controller.abort(), timeoutMs);
                 const response = await fetch(req.url, {
                   signal: controller.signal,
                 });
-
                 clearTimeout(timeoutId);
 
-                // Handle 410 Gone as sparse response
-                if (response.status === 410) {
-                  if (verbose) {
-                    console.log(
-                      'fetchTile warning on %s, sparse response due to 410 Gone',
-                      req.url,
-                    );
-                  }
-                  callback();
+                // HTTP 204 No Content means "empty tile" - generate a blank tile
+                if (response.status === 204) {
+                  const parts = url.parse(req.url);
+                  const extension = path.extname(parts.pathname).toLowerCase();
+                  // eslint-disable-next-line security/detect-object-injection -- extension is from path.extname, limited set
+                  const format = extensionToFormat[extension] || '';
+                  createEmptyResponse(format, '', callback);
                   return;
                 }
 
-                // Check for other non-ok responses
                 if (!response.ok) {
-                  throw new Error(
-                    `HTTP ${response.status}: ${response.statusText}`,
-                  );
+                  if (verbose >= 2) {
+                    console.log(
+                      'fetchTile HTTP %d on %s, %s',
+                      response.status,
+                      req.url,
+                      globalSparse
+                        ? 'allowing overzoom'
+                        : 'creating empty tile',
+                    );
+                  }
+
+                  if (globalSparse) {
+                    // sparse=true -> allow overzoom
+                    callback();
+                    return;
+                  }
+
+                  // sparse=false (default) -> create empty tile
+                  const parts = url.parse(req.url);
+                  const extension = path.extname(parts.pathname).toLowerCase();
+                  // eslint-disable-next-line security/detect-object-injection -- extension is from path.extname, limited set
+                  const format = extensionToFormat[extension] || '';
+                  createEmptyResponse(format, '', callback);
+                  return;
                 }
 
                 const responseHeaders = response.headers;
                 const responseData = await response.arrayBuffer();
-
                 const parsedResponse = {};
+
                 if (responseHeaders.get('last-modified')) {
                   parsedResponse.modified = new Date(
                     responseHeaders.get('last-modified'),
@@ -1392,8 +1411,7 @@ export const serve_rendered = {
                 parsedResponse.data = Buffer.from(responseData);
                 callback(null, parsedResponse);
               } catch (error) {
-                // Log DNS failures more prominently as they often indicate config issues
-                // Native fetch wraps DNS errors in error.cause
+                // Log DNS failures
                 if (error.cause?.code === 'ENOTFOUND') {
                   console.error(
                     `DNS RESOLUTION FAILED for ${req.url}. ` +
@@ -1402,20 +1420,27 @@ export const serve_rendered = {
                   );
                 }
 
-                // Handle AbortController timeout
+                // Log timeout
                 if (error.name === 'AbortError') {
                   console.error(
                     `FETCH TIMEOUT for ${req.url}. ` +
-                      `The request took longer than 10 seconds to complete.`,
+                      `The request took longer than ${timeoutMs} ms to complete.`,
                   );
                 }
 
-                // For all other errors (e.g., network errors, 404, 500, etc.) return empty content.
+                // Log all other errors
                 console.error(
                   `Error fetching remote URL ${req.url}:`,
                   error.message || error,
                 );
 
+                if (globalSparse) {
+                  // sparse=true -> allow overzoom
+                  callback();
+                  return;
+                }
+
+                // sparse=false (default) -> create empty tile
                 const parts = url.parse(req.url);
                 const extension = path.extname(parts.pathname).toLowerCase();
                 // eslint-disable-next-line security/detect-object-injection -- extension is from path.extname, limited set
@@ -1497,7 +1522,7 @@ export const serve_rendered = {
 
         // Remove (flatten) 3D buildings
         if (layer.paint['fill-extrusion-height']) {
-          if (verbose) {
+          if (verbose >= 1) {
             console.warn(
               `Warning: Layer '${layerIdForWarning}' in style '${id}' has property 'fill-extrusion-height'. ` +
                 `3D extrusion may appear distorted or misleading when rendered as a static image due to camera angle limitations. ` +
@@ -1508,7 +1533,7 @@ export const serve_rendered = {
           layer.paint['fill-extrusion-height'] = 0;
         }
         if (layer.paint['fill-extrusion-base']) {
-          if (verbose) {
+          if (verbose >= 1) {
             console.warn(
               `Warning: Layer '${layerIdForWarning}' in style '${id}' has property 'fill-extrusion-base'. ` +
                 `3D extrusion may appear distorted or misleading when rendered as a static image due to camera angle limitations. ` +
@@ -1554,7 +1579,6 @@ export const serve_rendered = {
 
     for (const name of Object.keys(styleJSON.sources)) {
       let sourceType;
-      let sparse;
       // eslint-disable-next-line security/detect-object-injection -- name is from style sources object keys
       let source = styleJSON.sources[name];
       let url = source.url;
@@ -1585,7 +1609,6 @@ export const serve_rendered = {
         if (dataInfo.inputFile) {
           inputFile = dataInfo.inputFile;
           sourceType = dataInfo.fileType;
-          sparse = dataInfo.sparse;
           s3Profile = dataInfo.s3Profile;
           requestPayer = dataInfo.requestPayer;
           s3Region = dataInfo.s3Region;
@@ -1629,7 +1652,6 @@ export const serve_rendered = {
           const type = source.type;
           Object.assign(source, metadata);
           source.type = type;
-          source.sparse = sparse;
           source.tiles = [
             // meta url which will be detected when requested
             `pmtiles://${name}/{z}/{x}/{y}.${metadata.format || 'pbf'}`,
@@ -1648,6 +1670,13 @@ export const serve_rendered = {
               tileJSON.attribution += source.attribution;
             }
           }
+
+          // Set sparse flag: user config overrides format-based default
+          // Vector tiles (pbf) default to false (204), raster tiles default to true (404)
+          const isVector = metadata.format === 'pbf';
+          // eslint-disable-next-line security/detect-object-injection -- name is from style sources object keys
+          map.sparseFlags[name] =
+            dataInfo.sparse ?? options.sparse ?? !isVector;
         } else {
           // MBTiles does not support remote URLs
 
@@ -1673,7 +1702,6 @@ export const serve_rendered = {
           const type = source.type;
           Object.assign(source, info);
           source.type = type;
-          source.sparse = sparse;
           source.tiles = [
             // meta url which will be detected when requested
             `mbtiles://${name}/{z}/{x}/{y}.${info.format || 'pbf'}`,
@@ -1696,6 +1724,13 @@ export const serve_rendered = {
               tileJSON.attribution += source.attribution;
             }
           }
+
+          // Set sparse flag: user config overrides format-based default
+          // Vector tiles (pbf) default to false (204), raster tiles default to true (404)
+          const isVector = info.format === 'pbf';
+          // eslint-disable-next-line security/detect-object-injection -- name is from style sources object keys
+          map.sparseFlags[name] =
+            dataInfo.sparse ?? options.sparse ?? !isVector;
         }
       }
     }

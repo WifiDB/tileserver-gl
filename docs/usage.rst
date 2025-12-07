@@ -19,6 +19,7 @@ Getting started
     -p, --port <port>         Port [8080] (default: 8080)
     -C|--no-cors              Disable Cross-origin resource sharing headers
     -u|--public_url <url>     Enable exposing the server on subpaths, not necessarily the root of the domain
+    --fetch-timeout <ms>      Timeout in milliseconds for fetching remote tiles (default: 15000)
     -V, --verbose [level]     More verbose output (level 1-3)
                                 -V, --verbose, -V 1, or --verbose 1: Important operations
                                 -V 2 or --verbose 2: Detailed operations  
@@ -100,6 +101,26 @@ Default preview style and configuration
 
 - If no configuration file is specified, a default preview style (compatible with openmaptiles) is used.
 - If no data file is specified (and is not found in the current working directory), a sample file is downloaded (showing the Zurich area)
+
+Remote tile fetching and timeouts
+======
+
+TileServer GL can fetch tiles from remote HTTP/HTTPS sources referenced in your style. The ``--fetch-timeout`` option controls how long the server will wait for remote tile requests before giving up.
+
+**Default behavior:**
+- Default timeout is 15 seconds (15000 milliseconds)
+- If a remote tile request exceeds this timeout, an error is logged and an empty tile is returned to the renderer
+
+**Tuning the timeout:**
+
+If you notice timeout errors with certain remote sources, you can adjust the timeout:
+::
+
+  # Increase timeout to 30 seconds for slower remote sources
+  tileserver-gl -c config.json --fetch-timeout 30000
+
+  # Reduce timeout to 5 seconds for faster failure
+  tileserver-gl -c config.json --fetch-timeout 5000
 
 Reloading the configuration
 ======
