@@ -1,0 +1,10 @@
+{
+  "styles": {
+    "PMTiles_Test": {
+      "style": "style.json",
+      "tilejson": {
+        "bounds": [-180, -85.0511, 180, 85.0511]
+      }
+    }
+  }
+}
