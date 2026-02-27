@@ -1,10 +1,45 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TileServer GL - Server for vector and raster maps with GL styles</title>
+  
+  <title>WiFiDB Map Tiles - Open Source Vector & Raster Maps</title>
+  <meta name="description" content="Free open-source map tile server providing vector and raster tiles, GL styles, and WMTS services for WiFiDB and open mapping projects.">
+  <link rel="canonical" href="https://tiles.wifidb.net/" />
+
   <link rel="stylesheet" type="text/css" href="{{public_url}}index.css{{&key_query}}" />
+  
+  <style>
+    /* --- Modern Condensed Header --- */
+    .hero-bar {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+      gap: 15px; padding: 15px 0; border-bottom: 1px solid #eee; margin-bottom: 10px;
+    }
+    .brand-group { flex: 1; min-width: 280px; }
+    .brand-group h1.title { margin: 0; text-align: left; }
+    .brand-group h1.title img { max-height: 35px; width: auto; }
+    .tagline { font-size: 0.85rem; margin: 4px 0 0 0; color: #666; }
+
+    .header-ad { flex: 0 0 468px; min-height: 60px; text-align: right; }
+    .ad-label-min { display: block; font-size: 9px; color: #bbb; text-transform: uppercase; margin-bottom: 2px; }
+
+    /* Fix for smaller windows / mobile */
+    @media (max-width: 800px) {
+      .hero-bar { flex-direction: column; text-align: center; padding: 5px !important; margin-bottom: 0px !important; gap: 5px !important; }
+      .brand-group h1.title { text-align: center; }
+      .brand-group h1.title img { max-height: 22px !important; }
+      .tagline { font-size: 0.7rem !important; margin-top: 2px !important; }
+      .header-ad { 
+        width: 100% !important; 
+        max-height: 65px !important; 
+        overflow: hidden !important;
+        display: flex; flex-direction: column; align-items: center; margin: 0 !important;
+      }
+      .box-header { margin-top: 5px !important; }
+    }
+  </style>
+
   <script>
     function toggle_link(id, link) {
       var el = document.getElementById(id);
@@ -30,22 +65,47 @@
       }
     }
   </script>
+  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2350008141216245" crossorigin="anonymous"></script>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-G4YGQ70KJF"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-G4YGQ70KJF');
+</script>
 </head>
 <body>
   <section>
-    <h1 class="title {{#if is_light}}light{{/if}}"><img src="{{public_url}}images/logo.png{{&key_query}}" alt="TileServer GL" /></h1>
-    <h2 class="subtitle">Vector {{#if is_light}}<s>and raster</s>{{else}}and raster{{/if}} maps with GL styles</h2>
+    <header class="hero-bar">
+      <div class="brand-group">
+        <h1 class="title {{#if is_light}}light{{/if}}">
+          <img src="{{public_url}}images/logo.png{{&key_query}}" alt="WiFiDB Map Tiles" />
+        </h1>
+        <p class="tagline">Open Source Maps: Vector/Raster tiles, GL Styles, and WMTS.</p>
+      </div>
+
+      <div class="header-ad">
+        <span class="ad-label-min">Advertisement</span>
+        <ins class="adsbygoogle"
+             style="display:inline-block;width:468px;height:60px"
+             data-ad-client="ca-pub-2350008141216245"
+             data-ad-slot="4095054379"></ins>
+        <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+      </div>
+    </header>
+
     <h2 class="box-header">Filter</h2>
-    <!-- filter box -->
     <div class="box">
       <div class="filter-item">
         <div class="filter-details">
           <h3>Filter styles and data by name or identifier</h3>
-          <!-- filter input , needs to call filter() when content changes...-->
           <input id="filter" type="text" oninput="filter()" placeholder="Start typing name or identifier" autofocus />
         </div>
       </div>
     </div>
+
     {{#if styles}}
       <h2 class="box-header">Styles</h2>
       <div class="box">
@@ -77,31 +137,24 @@
             </p>
           </div>
           <div class="viewers">
-            {{#if serving_data}}
-              {{#if serving_rendered}}
-                <a class="btn" href="{{public_url}}styles/{{@key}}/{{&../key_query}}{{viewer_hash}}">Viewer</a>
-              {{/if}}
-            {{/if}}
-            {{#if serving_rendered}}
-              <a class="btn" href="{{public_url}}styles/{{@key}}/?{{&../key_query_part}}raster{{viewer_hash}}">Raster</a>
-            {{/if}}
-            {{#if serving_data}}
-              <a class="btn" href="{{public_url}}styles/{{@key}}/?{{&../key_query_part}}vector{{viewer_hash}}">Vector</a>
-            {{/if}}
+            {{#if serving_data}}{{#if serving_rendered}}<a class="btn" href="{{public_url}}styles/{{@key}}/{{&../key_query}}{{viewer_hash}}">Viewer</a>{{/if}}{{/if}}
+            {{#if serving_rendered}}<a class="btn" href="{{public_url}}styles/{{@key}}/?{{&../key_query_part}}raster{{viewer_hash}}">Raster</a>{{/if}}
+            {{#if serving_data}}<a class="btn" href="{{public_url}}styles/{{@key}}/?{{&../key_query_part}}vector{{viewer_hash}}">Vector</a>{{/if}}
           </div>
         </div>
       {{/each}}
       </div>
     {{/if}}
+
     {{#if data}}
       <h2 class="box-header">Data</h2>
       <div class="box">
       {{#each data}}
         <div class="item" data-id="{{@key}}" data-name="{{tileJSON.name}}">
           {{#if thumbnail}}
-            <img src="{{public_url}}data/{{@key}}/{{thumbnail}}{{&../key_query}}" alt="{{name}} preview" />
+            <img src="{{public_url}}data/{{@key}}/{{thumbnail}}{{&../key_query}}" alt="{{tileJSON.name}} preview" />
           {{else}}
-            <img src="{{public_url}}images/placeholder.png{{&key_query}}" alt="{{name}} preview" />
+            <img src="{{public_url}}images/placeholder.png{{&key_query}}" alt="{{tileJSON.name}} preview" />
           {{/if}}
           <div class="details">
             <h3>{{tileJSON.name}}</h3>
@@ -109,36 +162,46 @@
             <div class="identifier">type: {{#is_vector}}vector{{/is_vector}}{{^is_vector}}raster{{/is_vector}} data {{#if sourceType}} | ext: {{sourceType}}{{/if}}</div>
             <p class="services">
               services: <a href="{{public_url}}data/{{@key}}.json{{&../key_query}}">TileJSON</a>
-              {{#if xyz_link}}
-                | <a href="#" onclick="return toggle_link('link_data_{{@key}}', '{{&xyz_link}}');">XYZ</a>
-              {{/if}}
-              {{#if elevation_link}}
-                | <a href="#" onclick="return toggle_link('link_data_{{@key}}', '{{&elevation_link}}');">Elevation</a>
-              {{/if}}
-                <input id="link_data_{{@key}}" type="text" value="" style="display:none;" />
+              {{#if xyz_link}} | <a href="#" onclick="return toggle_link('link_data_{{@key}}', '{{&xyz_link}}');">XYZ</a> {{/if}}
+              {{#if elevation_link}} | <a href="#" onclick="return toggle_link('link_data_{{@key}}', '{{&elevation_link}}');">Elevation</a> {{/if}}
+              <input id="link_data_{{@key}}" type="text" value="" style="display:none;" />
             </p>
           </div>
           <div class="viewers">
             {{#is_vector}}
-            <a class="btn" href="{{public_url}}data/{{@key}}/{{&../key_query}}{{viewer_hash}}">Inspect</a>
+              <a class="btn" href="{{public_url}}data/{{@key}}/{{&../key_query}}{{viewer_hash}}">Inspect</a>
             {{/is_vector}}
             {{^is_vector}}
-            <a class="btn" href="{{public_url}}data/{{@key}}/{{&../key_query}}{{viewer_hash}}">View</a>
-              {{#is_terrain}}
-            <a class="btn" href="{{public_url}}data/preview/{{@key}}/{{&../key_query}}{{viewer_hash}}">Preview Terrain</a>
-              {{/is_terrain}}
+              <a class="btn" href="{{public_url}}data/{{@key}}/{{&../key_query}}{{viewer_hash}}">View</a>
+              {{#is_terrain}} <a class="btn" href="{{public_url}}data/preview/{{@key}}/{{&../key_query}}{{viewer_hash}}">Preview Terrain</a> {{/is_terrain}}
             {{/is_vector}}
           </div>
         </div>
       {{/each}}
       </div>
     {{/if}}
+    
+    <div style="text-align: center; margin-top: 20px;">
+      <ins class="adsbygoogle"
+           style="display:block"
+           data-ad-client="ca-pub-2350008141216245"
+           data-ad-slot="4095054379"
+           data-ad-format="auto"
+           data-full-width-responsive="true"></ins>
+      <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+    </div>
   </section>
+
   <footer>
-    <a href="https://www.maptiler.com/" target="_blank"><img src="{{public_url}}images/maptiler-logo.svg{{&key_query}}" /></a>
-    <p>
-      <a href="https://github.com/maptiler/tileserver-gl" target="_blank">Powered by TileServer GL ({{server_version}})</a> – <a href="https://www.maptiler.com/" target="_blank">an open-source project from MapTiler.</a>
+    <p>&copy; <span id="current-year">2026</span> TechIdiots LLC. All rights reserved.</p>
+    <p style="font-size: 0.8em; margin-top: 5px;">
+      Powered by <a href="https://github.com/maptiler/tileserver-gl" target="_blank">TileServer GL</a> ({{server_version}}) &ndash; 
+      an open-source project from <a href="https://www.maptiler.com/" target="_blank">MapTiler</a>.
     </p>
+    <a href="https://www.maptiler.com/" target="_blank">
+      <img src="{{public_url}}images/maptiler-logo.svg{{&key_query}}" alt="MapTiler" style="width: 80px; opacity: 0.6;" />
+    </a>
+    <script>document.getElementById('current-year').textContent = new Date().getFullYear();</script>
   </footer>
 </body>
 </html>
