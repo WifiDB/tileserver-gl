@@ -24,6 +24,7 @@ Example:
         "localhost:8080",
         "127.0.0.1:8080"
       ],
+      "allowedHosts": "localhost,myapp.example.com",
       "formatOptions": {
         "jpeg": {
           "quality": 80
@@ -57,6 +58,9 @@ Example:
         "tilejson": {
           "format": "webp"
         }
+      },
+      "remote": {
+        "style": "https://demotiles.maplibre.org/style.json"
       }
     },
     "data": {
@@ -209,7 +213,7 @@ Not used by default.
 
 Each item in this object defines one style (map). It can have the following options:
 
-* ``style`` -- name of the style json file [required]
+* ``style`` -- name of the style json file or url of a remote hosted style [required]
 * ``serve_rendered`` -- whether to render the raster tiles for this style or not
 * ``serve_data`` -- whether to allow access to the original tiles, sprites and required glyphs
 * ``tilejson`` -- properties to add to the TileJSON created for the raster data
@@ -222,7 +226,7 @@ Each item in this object defines one style (map). It can have the following opti
 Each item specifies one data source which should be made accessible by the server. It has to have one of the following options:
 
 * ``mbtiles`` -- name of the mbtiles file
-* ``pmtiles`` -- name of the pmtiles file or url.
+* ``pmtiles`` -- name of the pmtiles file, url, or S3 path.
 
 For example::
 
@@ -235,11 +239,99 @@ For example::
     },
     "source3": {
       "pmtiles": "https://foo.lan/source3.pmtiles"
+    },
+    "source4": {
+      "pmtiles": "s3://my-bucket/tiles/terrain.pmtiles"
     }
   }
 
-
 The data source does not need to be specified here unless you explicitly want to serve the raw data.
+
+Data Source Options
+--------------
+
+Within the top-level ``data`` object in your configuration, each defined data source (e.g., `terrain`, `vector_tiles`) can have several key properties. These properties define how *tileserver-gl* processes and serves the tiles from that source.
+
+For example::
+
+  "data": {
+    "terrain": {
+      "mbtiles": "terrain1.mbtiles",
+      "encoding": "mapbox",
+      "tileSize": 512
+    },
+    "vector_tiles": {
+      "pmtiles": "custom_osm.pmtiles"
+    },
+    "production-s3-tiles": {
+      "pmtiles": "s3://prod-bucket/tiles.pmtiles",
+      "s3Profile": "production"
+    }
+  }
+
+Here are the available options for each data source:
+
+``encoding`` (string)
+    Applicable to terrain tiles. Configures the expected encoding of the terrain data.
+    Setting this to ``mapbox`` or ``terrarium`` enables a terrain preview mode and the ``elevation`` API for the ``data`` endpoint (if applicable to the source).
+
+``tileSize`` (integer)
+    Specifies the expected pixel dimensions of the tiles within this data source.
+    This option is crucial if your source data uses 512x512 pixel tiles, as *tileserver-gl* typically assumes 256x256 by default.
+    Allowed values: ``256``, ``512``.
+    Default: ``256``.
+
+``sparse`` (boolean)
+    Controls behavior when a tile is not found in the source.
+
+    * ``true`` - Returns HTTP 404, allowing clients like MapLibre to overzoom and use parent tiles. Use this for terrain or datasets with uneven zoom coverage.
+    * ``false`` - Returns HTTP 204 (No Content), signaling an intentionally empty tile and preventing overzoom.
+
+    This can be set globally in the top-level options or per-data-source (per-source overrides global).
+    Default: Depends on tile format - ``false`` for vector tiles (pbf), ``true`` for raster tiles (png, webp, jpg, etc.).
+
+``s3Profile`` (string)
+    Specifies the AWS credential profile to use for S3 PMTiles sources. The profile must be defined in your ``~/.aws/credentials`` file.
+    This is useful when you need to access multiple S3 buckets with different credentials.
+    Alternatively, you can specify the profile in the URL using ``?profile=profile-name``.
+    If both are specified, the configuration ``s3Profile`` takes precedence.
+    Optional, only applicable to PMTiles sources using S3 URLs.
+
+``requestPayer`` (boolean)
+    Enables support for "requester pays" S3 buckets where the requester (not the bucket owner) pays for data transfer costs.
+    Set to ``true`` if accessing a requester pays bucket.
+    Can be specified in the URL using ``?requestPayer=true`` or in the configuration.
+    If both are specified, the configuration value takes precedence.
+    Default: ``false``.
+    Optional, only applicable to PMTiles sources using S3 URLs.
+
+``s3Region`` (string)
+    Specifies the AWS region for the S3 bucket.
+    Important for optimizing performance and reducing data transfer costs when accessing AWS S3 buckets.
+    Can be specified in the URL using ``?region=region-name`` or in the configuration.
+    If both are specified, the configuration value takes precedence.
+    If not specified, uses ``AWS_REGION`` environment variable or defaults to ``us-east-1``.
+    Optional, only applicable to PMTiles sources using S3 URLs.
+
+``s3UrlFormat`` (string)
+    Specifies how to interpret the S3 URL format.
+    
+    Allowed values:
+    
+    * ``aws`` - Interpret as AWS S3 (``s3://bucket/path/file.pmtiles``)
+    * ``custom`` - Interpret as custom S3 endpoint (``s3://endpoint/bucket/path/file.pmtiles``)
+    * Not specified (default) - Auto-detect based on URL pattern
+    
+    Can be specified in the URL using ``?s3UrlFormat=aws`` or in the configuration.
+    If both are specified, the configuration value takes precedence.
+    
+    Optional, only applicable to PMTiles sources using S3 URLs.
+
+.. note::
+    By default, URLs with dots in the first segment (e.g., ``s3://storage.example.com/bucket/file.pmtiles``) are treated as custom endpoints, while URLs without dots are treated as AWS S3. Use ``s3UrlFormat: "aws"`` if your AWS bucket name contains dots.
+
+.. note::
+    These configuration options will be overridden by metadata in the MBTiles or PMTiles file. if corresponding properties exist in the file's metadata, you do not need to specify them in the data configuration.
 
 Referencing local files from style JSON
 =======================================
@@ -283,12 +375,161 @@ For example::
     "source3": {
       "url": "pmtiles://https://foo.lan/source3.pmtiles",
       "type": "vector"
-    },
+    }
   }
 
 Alternatively, you can use ``pmtiles://{source2}`` to reference existing data object from the config.
 In this case, the server will look into the ``config.json`` to determine what file to use by data id.
-For the config above, this is equivalent to ``pmtiles://source2.mbtiles``.
+For the config above, this is equivalent to ``pmtiles://source2.pmtiles``.
+
+S3 and S3-Compatible Storage
+-----------------------------
+
+PMTiles files can be accessed directly from AWS S3 or S3-compatible storage services (such as Contabo, DigitalOcean Spaces, MinIO, etc.) using S3 URLs. This provides better performance and eliminates HTTP rate limiting issues.
+
+**Supported URL Formats:**
+
+1. **AWS S3 (default):**
+   ``s3://bucket-name/path/to/file.pmtiles``
+
+2. **S3-compatible storage with custom endpoint:**
+   ``s3://endpoint-url/bucket-name/path/to/file.pmtiles``
+
+**AWS Credentials:**
+
+S3 sources require AWS credentials to be configured. The server will automatically use credentials from:
+
+* Environment variables: ``AWS_ACCESS_KEY_ID``, ``AWS_SECRET_ACCESS_KEY``, ``AWS_REGION``
+* AWS credentials file: ``~/.aws/credentials`` on Linux/macOS or ``C:\Users\USERNAME\.aws\credentials`` on Windows
+* IAM role (when running on AWS EC2, ECS, or Lambda)
+
+For S3-compatible storage providers, use the same AWS credential format with your provider's access keys.
+
+Example using environment variables::
+
+  export AWS_ACCESS_KEY_ID=your_access_key
+  export AWS_SECRET_ACCESS_KEY=your_secret_key
+  export AWS_REGION=us-west-2
+
+**Multiple AWS Credential Profiles:**
+
+If you need to access S3 buckets with different credentials, you can use AWS credential profiles. Profiles are defined in your AWS credentials file (``~/.aws/credentials`` on Linux/macOS or ``C:\Users\USERNAME\.aws\credentials`` on Windows)::
+
+  [default]
+  aws_access_key_id=YOUR_DEFAULT_KEY
+  aws_secret_access_key=YOUR_DEFAULT_SECRET
+
+  [production]
+  aws_access_key_id=YOUR_PRODUCTION_KEY
+  aws_secret_access_key=YOUR_PRODUCTION_SECRET
+
+  [staging]
+  aws_access_key_id=YOUR_STAGING_KEY
+  aws_secret_access_key=YOUR_STAGING_SECRET
+
+**S3 Configuration Options (Main Config Data Section):**
+
+When configuring S3 sources in the main configuration file's ``data`` section, you can use URL query parameters or configuration properties. Configuration properties take precedence over URL parameters.
+
+*Profile* - Specifies which AWS credential profile to use::
+
+  # URL parameter
+  "pmtiles": "s3://bucket/tiles.pmtiles?profile=production"
+  
+  # Configuration property
+  "pmtiles": "s3://bucket/tiles.pmtiles",
+  "s3Profile": "production"
+
+Precedence order (highest to lowest): Configuration property ``s3Profile``, URL parameter ``?profile=...``, default AWS credential chain.
+
+*Region* - Specifies the AWS region (important for performance and cost optimization)::
+
+  # URL parameter
+  "pmtiles": "s3://bucket/tiles.pmtiles?region=us-west-2"
+  
+  # Configuration property
+  "pmtiles": "s3://bucket/tiles.pmtiles",
+  "s3Region": "us-west-2"
+
+Precedence order (highest to lowest): Configuration property ``s3Region``, URL parameter ``?region=...``, Environment variable ``AWS_REGION``, Default: ``us-east-1``.
+
+*RequestPayer* - Enables "requester pays" buckets where you pay for data transfer::
+
+  # URL parameter
+  "pmtiles": "s3://bucket/tiles.pmtiles?requestPayer=true"
+  
+  # Configuration property
+  "pmtiles": "s3://bucket/tiles.pmtiles",
+  "requestPayer": true
+
+Precedence order (highest to lowest): Configuration property ``requestPayer``, URL parameter ``?requestPayer=true``, Default: ``false``.
+
+*S3UrlFormat* - Specifies how to interpret S3 URLs::
+
+  # URL parameter
+  "pmtiles": "s3://my.bucket.name/tiles.pmtiles?s3UrlFormat=aws"
+  
+  # Configuration property
+  "pmtiles": "s3://my.bucket.name/tiles.pmtiles",
+  "s3UrlFormat": "aws"
+
+Precedence order (highest to lowest): Configuration property ``s3UrlFormat``, URL parameter ``?s3UrlFormat=...``, Auto-detection.
+
+**Complete Configuration Examples:**
+
+Using URL parameters::
+
+  "data": {
+    "us-west-tiles": {
+      "pmtiles": "s3://prod-bucket/tiles.pmtiles?profile=production&region=us-west-2"
+    },
+    "dotted-bucket-name": {
+      "pmtiles": "s3://my.bucket.name/tiles.pmtiles?s3UrlFormat=aws&region=us-east-1"
+    },
+    "eu-requester-pays": {
+      "pmtiles": "s3://bucket/tiles.pmtiles?profile=prod&region=eu-central-1&requestPayer=true"
+    }
+  }
+
+Using configuration properties (recommended)::
+
+  "data": {
+    "us-west-tiles": {
+      "pmtiles": "s3://prod-bucket/tiles.pmtiles",
+      "s3Profile": "production",
+      "s3Region": "us-west-2"
+    },
+    "dotted-bucket-name": {
+      "pmtiles": "s3://my.bucket.name/tiles.pmtiles",
+      "s3UrlFormat": "aws",
+      "s3Region": "us-east-1"
+    },
+    "eu-requester-pays": {
+      "pmtiles": "s3://bucket/tiles.pmtiles",
+      "s3Profile": "production",
+      "s3Region": "eu-central-1",
+      "requestPayer": true
+    }
+  }
+
+**Using S3 in Style JSON Sources:**
+
+When referencing S3 sources from within a style JSON file, use the ``pmtiles://`` prefix with S3 URLs. You can specify profile, region, requestPayer, and s3UrlFormat using URL query parameters (configuration properties are not available in style JSON)::
+
+  "sources": {
+    "aws-tiles": {
+      "url": "pmtiles://s3://my-bucket/tiles.pmtiles?profile=production",
+      "type": "vector"
+    },
+    "dotted-bucket": {
+      "url": "pmtiles://s3://my.bucket.name/tiles.pmtiles?s3UrlFormat=aws",
+      "type": "vector"
+    },
+    "spaces-tiles": {
+      "url": "pmtiles://s3://example-storage.com/my-bucket/tiles.pmtiles?region=nyc3",
+      "type": "vector"
+    }
+  }
 
 Sprites
 -------
@@ -318,3 +559,23 @@ It should contain the following placeholders:
 * ``{range}`` -- range of the glyphs
 
 For example ``"glyphs": "{fontstack}/{range}.pbf"`` will instruct TileServer-GL to look for the files such as ``fonts/Open Sans/0-255.pbf`` (``fonts`` come from the ``paths`` property of the ``config.json`` example above).
+
+``allowedHosts``
+----------------
+
+Mitigates Host header poisoning (HNP) by restricting which hosts may appear in absolute URLs returned by the server. If set, only the specified hosts (case-insensitive, comma-separated) are allowed; otherwise, path-only URLs are returned when the request host is not in the list. Default is ``*`` (no restriction).
+
+You can set this option in your config file:
+
+.. code-block:: json
+
+  {
+    "options": {
+      "allowedHosts": "localhost,myapp.example.com"
+      // ...other options...
+    }
+  }
+
+If unset or set to ``*``, behavior is unchanged and all hosts are accepted. For production, set ``allowedHosts`` to your known host(s) or use ``public_url`` for a fixed base URL. This option can also be set via the ``TILESERVER_GL_ALLOWED_HOSTS`` environment variable, but config file takes priority if both are set.
+
+See also: ``public_url`` option and security documentation.

@@ -12,13 +12,36 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import axios from 'axios';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { server } from './server.js';
-import { isValidHttpUrl } from './utils.js';
-import { openPMtiles, getPMtilesInfo, isValidWebPMtiles } from './pmtiles_adapter.js';
+import { isValidRemoteUrl } from './utils.js';
+import { openPMtiles, getPMtilesInfo } from './pmtiles_adapter.js';
 import { program } from 'commander';
 import { existsP } from './promises.js';
 import { openMbTilesWrapper } from './mbtiles_wrapper.js';
+
+// ============================================================================
+// Global Error Handlers - Prevent server crashes from unhandled errors
+// ============================================================================
+
+// Prevent unhandled promise rejections from crashing the server
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Promise Rejection at:', promise);
+  console.error('Reason:', reason);
+  // Don't exit - keep server running
+});
+
+// Prevent uncaught exceptions from crashing the server
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  console.error('Stack:', error.stack);
+  // Don't exit - keep server running
+});
+
+// ============================================================================
+// Continue with normal startup
+// ============================================================================
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,7 +59,7 @@ program
   .usage('tileserver-gl [mbtiles] [options]')
   .option(
     '--file <file>',
-    'MBTiles or PMTiles file\n' +
+    'MBTiles or PMTiles file (local path, http(s)://, or s3:// URL)\n' +
       '\t                  ignored if the configuration file is also specified',
   )
   .option(
@@ -57,12 +80,38 @@ program
     '-u|--public_url <url>',
     'Enable exposing the server on subpaths, not necessarily the root of the domain',
   )
-  .option('-V, --verbose', 'More verbose output')
+  .option(
+    '-V, --verbose [level]',
+    'More verbose output (level 1-3)\n' +
+      '\t-V, --verbose, -V 1, or --verbose 1: Important operations\n' +
+      '\t-V 2 or --verbose 2: Detailed operations\n' +
+      '\t-V 3 or --verbose 3: All requests and debug info',
+    (value) => {
+      // If no value provided, return 1 (boolean true case)
+      if (value === undefined || value === true) return 1;
+      // Parse the numeric value
+      const level = parseInt(value, 10);
+      // Validate level is between 1-3
+      return isNaN(level) ? 1 : Math.min(Math.max(level, 1), 3);
+    },
+  )
+  .option(
+    '--fetch-timeout <ms>',
+    'External fetch timeout in milliseconds for renderer HTTP requests (default 15000)',
+    (value) => {
+      const v = parseInt(value, 10);
+      return isNaN(v) ? 15000 : v;
+    },
+  )
   .option('-s, --silent', 'Less verbose output')
   .option('-l|--log_file <file>', 'output log file (defaults to standard out)')
   .option(
     '-f|--log_format <format>',
     'define the log format:  https://github.com/expressjs/morgan#morganformat-options',
+  )
+  .option(
+    '--ignore-missing-files',
+    'Continue startup even if configured mbtiles/pmtiles files are missing',
   )
   .version(packageJson.version, '-v, --version');
 program.parse(process.argv);
@@ -75,6 +124,34 @@ const startServer = (configPath, config) => {
   if (publicUrl && publicUrl.lastIndexOf('/') !== publicUrl.length - 1) {
     publicUrl += '/';
   }
+  // Determine allowedHosts: config > env > default '*'
+  let allowedHosts = '*';
+  if (
+    config &&
+    config.options &&
+    typeof config.options.allowedHosts !== 'undefined'
+  ) {
+    allowedHosts = String(config.options.allowedHosts).trim();
+  } else if (process.env.TILESERVER_GL_ALLOWED_HOSTS) {
+    allowedHosts = String(process.env.TILESERVER_GL_ALLOWED_HOSTS).trim();
+  }
+  // Log warning if insecure defaults
+  if (
+    (allowedHosts === '*' ||
+      allowedHosts === '' ||
+      typeof allowedHosts === 'undefined') &&
+    !publicUrl
+  ) {
+    console.warn(
+      '[SECURITY WARNING] Host header poisoning mitigation is NOT enabled.',
+    );
+    console.warn(
+      '  Response URLs may be built from untrusted Host/X-Forwarded-* headers.',
+    );
+    console.warn(
+      '  For production, set --public_url or allowedHosts in config/options or TILESERVER_GL_ALLOWED_HOSTS env.',
+    );
+  }
   return server({
     configPath,
     config,
@@ -85,7 +162,10 @@ const startServer = (configPath, config) => {
     silent: opts.silent,
     logFile: opts.log_file,
     logFormat: opts.log_format,
+    fetchTimeout: opts.fetchTimeout,
     publicUrl,
+    allowedHosts,
+    ignoreMissingFiles: opts.ignoreMissingFiles,
   });
 };
 
@@ -96,19 +176,47 @@ const startWithInputFile = async (inputFile) => {
     `[INFO] See documentation to learn how to create config.json file.`,
   );
 
+  // Determine file type from prefix or extension
+  let fileType = null;
+
+  if (inputFile.startsWith('pmtiles://')) {
+    fileType = 'pmtiles';
+    inputFile = inputFile.replace('pmtiles://', '');
+  } else if (inputFile.startsWith('mbtiles://')) {
+    fileType = 'mbtiles';
+    inputFile = inputFile.replace('mbtiles://', '');
+  } else {
+    // Determine by extension (remove query parameters first)
+    const extension = inputFile.split('?')[0].split('.').pop().toLowerCase();
+    if (extension === 'pmtiles' || extension === 'mbtiles') {
+      fileType = extension;
+    }
+  }
+
+  if (!fileType) {
+    console.log(`ERROR: Unable to determine file type for "${inputFile}".`);
+    console.log(
+      `File must end with .pmtiles or .mbtiles, or use pmtiles:// or mbtiles:// prefix.`,
+    );
+    process.exit(1);
+  }
+
   let inputFilePath;
-  if (isValidWebPMtiles(inputFile)) {
+  // Check if input is a remote URL (HTTP, HTTPS, or S3)
+  if (isValidRemoteUrl(inputFile)) {
     inputFilePath = process.cwd();
   } else {
+    // Local file path
     inputFile = path.resolve(process.cwd(), inputFile);
     inputFilePath = path.dirname(inputFile);
 
     const inputFileStats = await fsp.stat(inputFile);
     if (!inputFileStats.isFile() || inputFileStats.size === 0) {
-      console.log(`ERROR: Not a valid input file: `);
+      console.log(`ERROR: Not a valid input file: ${inputFile}`);
       process.exit(1);
     }
   }
+  console.log(`[INFO] Loading data source from: ${inputFile}`);
 
   const styleDir = path.resolve(
     __dirname,
@@ -129,16 +237,22 @@ const startWithInputFile = async (inputFile) => {
     data: {},
   };
 
-  const extension = inputFile.split('.').pop().toLowerCase();
-  if (extension === 'pmtiles') {
-    const fileOpenInfo = await openPMtiles(inputFile);
-    const metadata = await getPMtilesInfo(fileOpenInfo);
+  if (fileType === 'pmtiles') {
+    const fileOpenInfo = openPMtiles(
+      inputFile,
+      undefined,
+      undefined,
+      undefined,
+      opts.verbose,
+    );
+    const metadata = await getPMtilesInfo(fileOpenInfo, inputFile);
 
     if (
       metadata.format === 'pbf' &&
       metadata.name.toLowerCase().indexOf('openmaptiles') > -1
     ) {
-      if (isValidWebPMtiles(inputFile)) {
+      // Use inputFile directly for remote URLs (HTTP or S3)
+      if (isValidRemoteUrl(inputFile)) {
         config['data'][`v3`] = {
           pmtiles: inputFile,
         };
@@ -153,6 +267,7 @@ const startWithInputFile = async (inputFile) => {
         const styleFileRel = styleName + '/style.json';
         const styleFile = path.resolve(styleDir, 'styles', styleFileRel);
         if (await existsP(styleFile)) {
+          // eslint-disable-next-line security/detect-object-injection -- styleName is from trusted filesystem readdir, not user input
           config['styles'][styleName] = {
             style: styleFileRel,
             tilejson: {
@@ -165,7 +280,8 @@ const startWithInputFile = async (inputFile) => {
       console.log(
         `WARN: PMTiles not in "openmaptiles" format. Serving raw data only...`,
       );
-      if (isValidWebPMtiles(inputFile)) {
+      // Use inputFile directly for remote URLs (HTTP or S3)
+      if (isValidRemoteUrl(inputFile)) {
         config['data'][(metadata.id || 'pmtiles').replace(/[?/:]/g, '_')] = {
           pmtiles: inputFile,
         };
@@ -176,17 +292,18 @@ const startWithInputFile = async (inputFile) => {
       }
     }
 
-    if (opts.verbose) {
+    if (opts.verbose >= 1) {
       console.log(JSON.stringify(config, undefined, 2));
     } else {
       console.log('Run with --verbose to see the config file here.');
     }
 
     return startServer(null, config);
-  } else {
-    if (isValidWebPMtiles(inputFile)) {
+  } else if (fileType === 'mbtiles') {
+    // MBTiles handling - reject remote URLs
+    if (isValidRemoteUrl(inputFile)) {
       console.log(
-        `ERROR: MBTiles does not support web based files. "${inputFile}" is not a valid data file.`,
+        `ERROR: MBTiles does not support remote files. "${inputFile}" is not a valid data file.`,
       );
       process.exit(1);
     }
@@ -215,6 +332,7 @@ const startWithInputFile = async (inputFile) => {
         const styleFileRel = styleName + '/style.json';
         const styleFile = path.resolve(styleDir, 'styles', styleFileRel);
         if (await existsP(styleFile)) {
+          // eslint-disable-next-line security/detect-object-injection -- styleName is from trusted filesystem readdir, not user input
           config['styles'][styleName] = {
             style: styleFileRel,
             tilejson: {
@@ -232,7 +350,7 @@ const startWithInputFile = async (inputFile) => {
       };
     }
 
-    if (opts.verbose) {
+    if (opts.verbose >= 1) {
       console.log(JSON.stringify(config, undefined, 2));
     } else {
       console.log('Run with --verbose to see the config file here.');
@@ -272,24 +390,26 @@ fs.stat(path.resolve(opts.config), async (err, stats) => {
         const url =
           'https://github.com/maptiler/tileserver-gl/releases/download/v1.3.0/zurich_switzerland.mbtiles';
         const filename = 'zurich_switzerland.mbtiles';
+
         const writer = fs.createWriteStream(filename);
         console.log(`No input file found`);
         console.log(`[DEMO] Downloading sample data (${filename}) from ${url}`);
 
         try {
-          const response = await axios({
-            url,
-            method: 'GET',
-            responseType: 'stream',
-          });
+          const response = await fetch(url);
 
-          response.data.pipe(writer);
-          writer.on('finish', () => startWithInputFile(filename));
-          writer.on('error', (err) =>
-            console.error(`Error writing file: ${err}`),
-          );
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+
+          // Convert web ReadableStream to Node.js Readable stream and pipe to file
+          const nodeStream = Readable.fromWeb(response.body);
+          await pipeline(nodeStream, writer);
+
+          console.log('Download complete');
+          startWithInputFile(filename);
         } catch (error) {
-          console.error(`Error downloading file: ${error}`);
+          console.error(`Error downloading file: ${error.message || error}`);
         }
       }
     }

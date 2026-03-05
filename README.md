@@ -9,7 +9,7 @@ Vector and raster maps with GL styles. Server-side rendering by MapLibre GL Nati
 Download vector tiles from [OpenMapTiles](https://data.maptiler.com/downloads/planet/).
 ## Getting Started with Node
 
-Make sure you have Node.js version **18.17.0** or above installed. Node 20 is recommended. (running `node -v` it should output something like `v20.x.x`). Running without docker requires [Native dependencies](https://maptiler-tileserver.readthedocs.io/en/latest/installation.html#npm) to be installed first.
+Make sure you have Node.js version **20** or above installed. Node 24 is recommended. (running `node -v` it should output something like `v24.x.x`). Running without docker requires [Native dependencies](https://maptiler-tileserver.readthedocs.io/en/latest/installation.html#npm) to be installed first.
 
 Install `tileserver-gl` with server-side raster rendering of vector tiles with npm. 
 
@@ -43,7 +43,7 @@ An alternative to npm to start the packed software easier is to install [Docker]
 Example using a mbtiles file
 ```bash
 wget https://github.com/maptiler/tileserver-gl/releases/download/v1.3.0/zurich_switzerland.mbtiles
-docker run --rm -it -v $(pwd):/data -p 8080:8080 maptiler/tileserver-gl --file zurich_switzerland.mbtiles
+docker run --rm -it -v $(pwd):/data -p 8080:8080 maptiler/tileserver-gl:latest --file zurich_switzerland.mbtiles
 [in your browser, visit http://[server ip]:8080]
 ```
 
@@ -51,18 +51,18 @@ Example using a config.json + style + mbtiles file
 ```bash
 wget https://github.com/maptiler/tileserver-gl/releases/download/v1.3.0/test_data.zip
 unzip test_data.zip
-docker run --rm -it -v $(pwd):/data -p 8080:8080 maptiler/tileserver-gl
+docker run --rm -it -v $(pwd):/data -p 8080:8080 maptiler/tileserver-gl:latest
 [in your browser, visit http://[server ip]:8080]
 ```
 
 Example using a different path
 ```bash
-docker run --rm -it -v /your/local/config/path:/data -p 8080:8080 maptiler/tileserver-gl
+docker run --rm -it -v /your/local/config/path:/data -p 8080:8080 maptiler/tileserver-gl:latest
 ```
 replace '/your/local/config/path' with the path to your config file
 
 
-Alternatively, you can use the `maptiler/tileserver-gl-light` docker image instead, which is pure javascript, does not have any native dependencies, and can run anywhere, but does not contain rasterization on the server side made with Maplibre GL Native.
+Alternatively, you can use the `maptiler/tileserver-gl-light:latest` docker image instead, which is pure javascript, does not have any native dependencies, and can run anywhere, but does not contain rasterization on the server side made with Maplibre GL Native.
 
 ## Getting Started with Linux cli
 
@@ -81,6 +81,26 @@ xvfb-run --server-args="-screen 0 1024x768x24" node .
 ## Documentation
 
 You can read the full documentation of this project at https://tileserver.readthedocs.io/en/latest/.
+
+## Security: Host header poisoning (HNP) mitigation
+
+When the server is started **without** `--public_url`, URLs in responses (WMTS, TileJSON, style JSON) are built from the request’s `Host` and `X-Forwarded-*` headers. If an attacker can influence these headers, the server may return URLs pointing to an attacker-controlled host (Host header poisoning). Clients that use those URLs can then be directed to malicious servers.
+
+**Recommended for production:**
+
+1. **Set a canonical public URL** so the server never derives host from the request:
+   ```bash
+   tileserver-gl --public_url https://your-domain.com/ --file your.mbtiles
+   ```
+
+2. **Or** restrict which hosts are allowed when not using `--public_url`, via the **allowed-hosts** list (default is `*`, i.e. no restriction):
+   - Set the environment variable **`TILESERVER_GL_ALLOWED_HOSTS`** to a comma-separated list of allowed hostnames (e.g. `localhost,myapp.example.com`). If the request’s host (or `X-Forwarded-Host`) is not in this list, the server returns **path-only** URLs instead of absolute URLs, so responses cannot be poisoned with an attacker’s host.
+   - Example:
+     ```bash
+     export TILESERVER_GL_ALLOWED_HOSTS="localhost,map.example.com"
+     tileserver-gl --file your.mbtiles
+     ```
+   - If you do not set this variable (or set it to `*`), behavior is unchanged and all hosts are accepted; for public-facing deployments you should either use `--public_url` or set `TILESERVER_GL_ALLOWED_HOSTS` to your known host(s). See [SECURITY.md](SECURITY.md) for details.
 
 ## Alternative
 
