@@ -16,6 +16,7 @@ import morgan from 'morgan';
 import { serve_data } from './serve_data.js';
 import { serve_style } from './serve_style.js';
 import { serve_font } from './serve_font.js';
+import { clearPMtilesCache } from './pmtiles_adapter.js';
 import {
   allowedTileSizes,
   getTileUrls,
@@ -45,6 +46,7 @@ const { serve_rendered } = await import(
  * @returns {Promise<object>} - A promise that resolves to the server object.
  */
 async function start(opts) {
+  let metricsModule = null;
   console.log('Starting server');
 
   const app = express().disable('x-powered-by');
@@ -54,8 +56,40 @@ async function start(opts) {
     data: {},
     fonts: {},
   };
+  let cleanup = async () => {};
 
   app.enable('trust proxy');
+
+  // Import metrics module early if enabled, so middleware doesn't miss requests
+  if (opts.metrics) {
+    try {
+      const m = await import('./metrics.js');
+      metricsModule = m;
+    } catch (err) {
+      console.warn(`[metrics] Failed to import metrics module: ${err.message}`);
+    }
+  }
+
+  // Prometheus HTTP metrics middleware (only register if metrics enabled)
+  if (opts.metrics) {
+    app.use((req, res, next) => {
+      const start = process.hrtime.bigint();
+      res.on('finish', () => {
+        const route = req.route?.path ?? '<unknown>';
+        const durationSec = Number(process.hrtime.bigint() - start) / 1e9;
+        metricsModule.httpRequestsTotal.inc({
+          method: req.method,
+          route,
+          status_code: String(res.statusCode),
+        });
+        metricsModule.httpRequestDuration.observe(
+          { method: req.method, route, status_code: String(res.statusCode) },
+          durationSec,
+        );
+      });
+      next();
+    });
+  }
 
   if (process.env.NODE_ENV !== 'test') {
     const defaultLogFormat =
@@ -249,10 +283,12 @@ async function start(opts) {
             // eslint-disable-next-line security/detect-object-injection -- dataItemId is validated above
             const dataSource = data[dataItemId];
             const fileType = dataSource.pmtiles ? 'pmtiles' : 'mbtiles';
+            // eslint-disable-next-line security/detect-object-injection -- fileType is either 'pmtiles' or 'mbtiles'
             const fileName = dataSource[fileType];
 
             // Skip validation for remote URLs
             if (fileName && !isValidRemoteUrl(fileName)) {
+              // eslint-disable-next-line security/detect-object-injection -- fileType is either 'pmtiles' or 'mbtiles'
               const filePath = path.resolve(options.paths[fileType], fileName);
               try {
                 const stats = fs.statSync(filePath);
@@ -264,7 +300,7 @@ async function start(opts) {
                   // File missing but flag not set - let it fail later
                   return dataItemId;
                 }
-              } catch (err) {
+              } catch (_err) {
                 // File doesn't exist
                 if (opts.ignoreMissingFiles) {
                   return undefined;
@@ -299,7 +335,7 @@ async function start(opts) {
                       return undefined;
                     }
                   }
-                } catch (err) {
+                } catch (_err) {
                   // File doesn't exist
                   if (opts.ignoreMissingFiles) {
                     return undefined;
@@ -500,6 +536,10 @@ async function start(opts) {
       continue;
     }
     stylePromises.push(addStyle(id, item, true, true));
+    // Pre-initialize error counter for this style so metric appears in output
+    if (metricsModule) {
+      metricsModule.tileErrorsTotal.inc({ type: 'rendered', name: id }, 0);
+    }
   }
 
   // Wait for styles to finish loading, then load data sources
@@ -551,6 +591,9 @@ async function start(opts) {
       path.join(options.paths.styles, '*.json'),
       {},
     );
+    cleanup = async () => {
+      await watcher.close();
+    };
     watcher.on('all', (eventType, filename) => {
       if (filename) {
         const id = path.basename(filename, '.json');
@@ -613,7 +656,7 @@ async function start(opts) {
     for (const id of Object.keys(serving[type])) {
       // eslint-disable-next-line security/detect-object-injection -- type is 'rendered' or 'data', id is from Object.keys
       const info = clone(serving[type][id].tileJSON);
-      let path = '';
+      let path;
       if (type === 'rendered') {
         path = `styles/${id}`;
       } else {
@@ -711,7 +754,7 @@ async function start(opts) {
         if (opts.verbose >= 1) {
           console.log(`Serving template at path: ${urlPath}`);
         }
-        let data = {};
+        let data;
         if (dataGetter) {
           data = dataGetter(req);
           if (data) {
@@ -738,7 +781,7 @@ async function start(opts) {
       });
     } catch (err) {
       console.error(`Error reading template file: ${templateFile}`, err);
-      throw new Error(`Template not found: ${err.message}`); //throw an error so that the server doesnt start
+      throw new Error(`Template not found: ${err.message}`, { cause: err }); //throw an error so that the server doesnt start
     }
   }
 
@@ -911,26 +954,12 @@ async function start(opts) {
       return null;
     }
 
-    let baseUrl;
-    if (opts.publicUrl) {
-      baseUrl = opts.publicUrl;
-    } else {
-      const parsedAllowed = parseAllowedHosts(opts.allowedHosts);
-      const candidateHost = getCandidateHost(req);
-      if (!isHostAllowed(candidateHost, parsedAllowed)) {
-        baseUrl = '/';
-      } else {
-        const proto = getSafeProtocol(req);
-        baseUrl = `${proto}://${candidateHost}/`;
-      }
-    }
-
     return {
       ...wmts,
       id,
       // eslint-disable-next-line security/detect-object-injection -- id is route parameter from URL
       name: (serving.styles[id] || serving.rendered[id]).name,
-      baseUrl,
+      baseUrl: getPublicUrl(opts.publicUrl, req, opts.allowedHosts),
     };
   });
 
@@ -1024,11 +1053,40 @@ async function start(opts) {
   // add server.shutdown() to gracefully stop serving
   enableShutdown(server);
 
+  // Prometheus metrics server (separate port, opt-in)
+  let metricsServer = null;
+  if (opts.metrics && metricsModule) {
+    try {
+      const metricsApp = express();
+      metricsApp.get('/metrics', async (_req, res) => {
+        res.set('Content-Type', metricsModule.registry.contentType);
+        res.end(await metricsModule.registry.metrics());
+      });
+      await new Promise((resolve) => {
+        metricsServer = metricsApp.listen(opts.metricsPort, '127.0.0.1');
+        metricsServer.once('error', (err) => {
+          console.warn(
+            `[metrics] Failed to start metrics server: ${err.message}`,
+          );
+          resolve(); // don't crash — metrics are non-critical
+        });
+        metricsServer.once('listening', resolve);
+      });
+      console.log(
+        `Prometheus metrics available at http://localhost:${opts.metricsPort}/metrics`,
+      );
+    } catch (err) {
+      console.warn(`[metrics] Failed to initialize metrics: ${err.message}`);
+    }
+  }
+
   return {
     app,
     server,
     startupPromise,
     serving,
+    cleanup,
+    metricsServer,
   };
 }
 /**
@@ -1042,34 +1100,89 @@ function stopGracefully(signal) {
 }
 
 /**
+ * Registers a process signal handler once.
+ * @param {string} signal Name of the process signal.
+ * @returns {void}
+ */
+function registerSignalHandler(signal) {
+  if (!process.listeners(signal).includes(stopGracefully)) {
+    process.on(signal, stopGracefully);
+  }
+}
+
+/**
  * Starts and manages the server
  * @param {object} opts - Configuration options for the server.
  * @returns {Promise<object>} - A promise that resolves to the running server
  */
 export async function server(opts) {
   const running = await start(opts);
+  let reloading = false;
+  let pendingReload = false;
 
   running.startupPromise.catch((err) => {
     console.error(err.message);
     process.exit(1);
   });
 
-  process.on('SIGINT', stopGracefully);
-  process.on('SIGTERM', stopGracefully);
+  registerSignalHandler('SIGINT');
+  registerSignalHandler('SIGTERM');
+
+  const reload = async () => {
+    if (reloading) {
+      pendingReload = true;
+      console.log('Reload already in progress, queueing another refresh');
+      return;
+    }
+
+    reloading = true;
+    let reloadAgain = true;
+
+    try {
+      while (reloadAgain) {
+        reloadAgain = false;
+        pendingReload = false;
+        await new Promise((resolve, reject) => {
+          running.server.shutdown((err) => {
+            if (err) {
+              reject(err);
+              return;
+            }
+            resolve();
+          });
+        });
+        if (running.metricsServer) {
+          await new Promise((resolve) => running.metricsServer.close(resolve));
+        }
+        await running.cleanup();
+        await serve_data.clear(running.serving.data);
+        if (!isLight) {
+          await serve_rendered.clear(running.serving.rendered);
+        }
+        clearPMtilesCache();
+
+        const restarted = await start(opts);
+        running.server = restarted.server;
+        running.app = restarted.app;
+        running.startupPromise = restarted.startupPromise;
+        running.serving = restarted.serving;
+        running.cleanup = restarted.cleanup;
+        running.metricsServer = restarted.metricsServer;
+        await running.startupPromise;
+        reloadAgain = pendingReload;
+      }
+    } finally {
+      reloading = false;
+    }
+  };
 
   process.on('SIGHUP', (signal) => {
     console.log(`Caught signal ${signal}, refreshing`);
     console.log('Stopping server and reloading config');
 
-    running.server.shutdown(async () => {
-      const restarted = await start(opts);
-      if (!isLight) {
-        serve_rendered.clear(running.serving.rendered);
-      }
-      running.server = restarted.server;
-      running.app = restarted.app;
-      running.startupPromise = restarted.startupPromise;
-      running.serving = restarted.serving;
+    reload().catch((err) => {
+      console.error(err.message);
+      process.exit(1);
     });
   });
   return running;
