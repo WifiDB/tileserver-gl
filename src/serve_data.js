@@ -5,7 +5,7 @@ import path from 'path';
 
 import clone from 'clone';
 import express from 'express';
-import Pbf from 'pbf';
+import { PbfReader } from 'pbf';
 import { VectorTile } from '@mapbox/vector-tile';
 import { SphericalMercator } from '@mapbox/sphericalmercator';
 
@@ -21,6 +21,8 @@ import { gunzipP, gzipP } from './promises.js';
 import { openMbTilesWrapper } from './mbtiles_wrapper.js';
 
 import fs from 'node:fs';
+
+let metricsModule = null;
 import { fileURLToPath } from 'url';
 
 const packageJson = JSON.parse(
@@ -45,6 +47,16 @@ export const serve_data = {
    */
   init: function (options, repo, programOpts) {
     const { verbose, allowedHosts } = programOpts;
+    // Cache metrics module if enabled. Safe because tests verify before production.
+    if (programOpts.metrics) {
+      import('./metrics.js')
+        .then((m) => {
+          metricsModule = m;
+        })
+        .catch((err) => {
+          console.error('Failed to import metrics module:', err);
+        });
+    }
     const app = express().disable('x-powered-by');
     app.use(express.json());
 
@@ -142,7 +154,7 @@ export const serve_data = {
         headers['Content-Type'] = 'application/x-protobuf';
       } else if (format === 'geojson') {
         headers['Content-Type'] = 'application/json';
-        const tile = new VectorTile(new Pbf(data));
+        const tile = new VectorTile(new PbfReader(data));
         const geojson = {
           type: 'FeatureCollection',
           features: [],
@@ -167,6 +179,12 @@ export const serve_data = {
 
       data = await gzipP(data);
 
+      if (metricsModule) {
+        metricsModule.tilesServedTotal.inc({
+          type: 'vector',
+          name: req.params.id,
+        });
+      }
       return res.status(200).send(data);
     });
 
@@ -548,14 +566,14 @@ export const serve_data = {
         if (!inputFileStats.isFile() || inputFileStats.size === 0) {
           throw Error(`Not valid input file: "${inputFile}"`);
         }
-      } catch (err) {
+      } catch (_err) {
         if (ignoreMissingFiles) {
           console.log(
             `WARN: Data source '${id}' file not found: "${inputFile}" - skipping`,
           );
           return;
         }
-        throw Error(`Not valid input file: "${inputFile}"`);
+        throw Error(`Not valid input file: "${inputFile}"`, { cause: _err });
       }
     }
 
@@ -623,5 +641,30 @@ export const serve_data = {
       sourceType,
       sparse,
     };
+  },
+  /**
+   * Removes all items from the repository and closes owned local data sources.
+   * @param {object} repo Repository object.
+   * @returns {Promise<void>}
+   */
+  clear: async function (repo) {
+    await Promise.all(
+      Object.keys(repo).map(async (id) => {
+        // eslint-disable-next-line security/detect-object-injection -- id is from Object.keys() iteration
+        const item = repo[id];
+        try {
+          if (item && item.sourceType === 'mbtiles' && item.source) {
+            await new Promise((resolve, reject) => {
+              item.source.close((err) => (err ? reject(err) : resolve()));
+            });
+          }
+        } catch (err) {
+          console.warn(`Failed to close data source "${id}":`, err);
+        } finally {
+          // eslint-disable-next-line security/detect-object-injection -- id is from Object.keys() iteration
+          delete repo[id];
+        }
+      }),
+    );
   },
 };

@@ -41,6 +41,7 @@ import { renderOverlay, renderWatermark, renderAttribution } from './render.js';
 import fsp from 'node:fs/promises';
 import { existsP, gunzipP } from './promises.js';
 import { openMbTilesWrapper } from './mbtiles_wrapper.js';
+import { parse as secureParse } from 'secure-json-parse';
 
 const FLOAT_PATTERN = '[+-]?(?:\\d+|\\d*\\.\\d+)';
 
@@ -144,6 +145,67 @@ function createEmptyResponse(format, color, callback) {
     console.error('Error during image processing setup:', error);
     callback(error, null);
   }
+}
+
+const ALLOW_STATIC_PARAMS = new Set([
+  'path',
+  'marker',
+  'latlng',
+  'padding',
+  'maxzoom',
+  'fill',
+  'stroke',
+  'width',
+  'linecap',
+  'linejoin',
+  'border',
+  'borderwidth',
+]);
+
+/**
+ * Merges query and body into a null-prototype object.
+ * Accumulates multiple values for the same key into arrays for a lossless merge.
+ * @param {object} query Request query parameters.
+ * @param {object} body Request body parameters.
+ * @returns {object} The merged parameters.
+ */
+export function getSecureMergedParams(query, body) {
+  const result = Object.create(null);
+
+  const accumulate = (source) => {
+    if (!source) return;
+    if (typeof source !== 'object' || Array.isArray(source))
+      throw new Error(`Invalid data.`);
+
+    for (const [key, value] of Object.entries(source)) {
+      if (!ALLOW_STATIC_PARAMS.has(key)) {
+        continue;
+      }
+
+      const isPrimitive = value === null || typeof value !== 'object';
+      const isPrimitiveArray =
+        Array.isArray(value) &&
+        value.every((v) => v === null || typeof v !== 'object');
+
+      if (!isPrimitive && !isPrimitiveArray)
+        throw new Error(
+          `Invalid value type for key "${key}": nested objects are not allowed.`,
+        );
+
+      const ensureArray = (v) => (Array.isArray(v) ? v : [v]);
+      if (key in result) {
+        // eslint-disable-next-line security/detect-object-injection -- result is a null-prototype object; key is from validated source
+        result[key] = ensureArray(result[key]).concat(ensureArray(value));
+      } else {
+        // eslint-disable-next-line security/detect-object-injection -- result is a null-prototype object; key is from validated source
+        result[key] = value;
+      }
+    }
+  };
+
+  accumulate(query);
+  accumulate(body);
+  return result;
 }
 
 /**
@@ -477,6 +539,7 @@ function calcZForBBox(bbox, w, h, query) {
  * @param {object} res Express response object.
  * @param {Buffer|null} overlay Optional overlay image.
  * @param {string} mode Rendering mode ('tile' or 'static').
+ * @param {string|null} id Style or dataset ID for metrics labeling.
  * @returns {Promise<void>}
  */
 async function respondImage(
@@ -494,6 +557,7 @@ async function respondImage(
   res,
   overlay = null,
   mode = 'tile',
+  id = null,
 ) {
   if (
     Math.abs(lon) > 180 ||
@@ -537,10 +601,14 @@ async function respondImage(
   }
 
   pool.acquire(async (err, renderer) => {
+    const renderStart = process.hrtime.bigint();
     // Check if pool.acquire failed or returned null/invalid renderer
     if (err) {
       console.error('Failed to acquire renderer from pool:', err);
       if (!res.headersSent) {
+        if (metricsModule) {
+          metricsModule.tileErrorsTotal.inc({ type: 'rendered', name: id });
+        }
         return res.status(503).send('Renderer pool error');
       }
       return;
@@ -551,6 +619,9 @@ async function respondImage(
         'Renderer is null - likely crashed or failed to initialize',
       );
       if (!res.headersSent) {
+        if (metricsModule) {
+          metricsModule.tileErrorsTotal.inc({ type: 'rendered', name: id });
+        }
         return res.status(503).send('Renderer unavailable');
       }
       return;
@@ -565,6 +636,9 @@ async function respondImage(
         console.error('Error removing bad renderer:', e);
       }
       if (!res.headersSent) {
+        if (metricsModule) {
+          metricsModule.tileErrorsTotal.inc({ type: 'rendered', name: id });
+        }
         return res.status(503).send('Renderer invalid');
       }
       return;
@@ -631,6 +705,9 @@ async function respondImage(
             console.error('Error removing failed renderer:', e);
           }
           if (!res.headersSent) {
+            if (metricsModule) {
+              metricsModule.tileErrorsTotal.inc({ type: 'rendered', name: id });
+            }
             return res
               .status(500)
               .header('Content-Type', 'text/plain')
@@ -729,12 +806,34 @@ async function respondImage(
           if (err || !buffer) {
             console.error('Sharp error:', err);
             if (!res.headersSent) {
+              if (metricsModule) {
+                metricsModule.tileErrorsTotal.inc({
+                  type: 'rendered',
+                  name: id,
+                });
+              }
               return res.status(500).send('Image processing failed');
             }
             return;
           }
 
           if (!res.headersSent) {
+            if (metricsModule) {
+              const renderDurationSec =
+                Number(process.hrtime.bigint() - renderStart) / 1e9;
+              metricsModule.tilesServedTotal.inc({
+                type: 'rendered',
+                name: id,
+              });
+              const zoomLabel =
+                process.env.TILESERVER_GL_METRICS_ZOOM === 'true'
+                  ? String(z)
+                  : 'all';
+              metricsModule.tileRenderDuration.observe(
+                { name: id, zoom: zoomLabel },
+                renderDurationSec,
+              );
+            }
             res.set({
               'Last-Modified': item.lastModified,
               'Content-Type': `image/${format}`,
@@ -752,6 +851,9 @@ async function respondImage(
         console.error('Error removing renderer after error:', e);
       }
       if (!res.headersSent) {
+        if (metricsModule) {
+          metricsModule.tileErrorsTotal.inc({ type: 'rendered', name: id });
+        }
         return res.status(500).send('Render failed');
       }
     }
@@ -843,7 +945,7 @@ async function handleTileRequest(
 
   // prettier-ignore
   return await respondImage(
-    options, item, z, tileCenter[0], tileCenter[1], 0, 0, parsedTileSize, parsedTileSize, scale, format, res,
+    options, item, z, tileCenter[0], tileCenter[1], 0, 0, parsedTileSize, parsedTileSize, scale, format, res, null, 'tile', id,
   );
 }
 
@@ -882,8 +984,8 @@ async function handleStaticRequest(
   // eslint-disable-next-line security/detect-object-injection -- id is route parameter, validated by Express
   const item = repo[id];
 
-  let parsedWidth = null;
-  let parsedHeight = null;
+  let parsedWidth;
+  let parsedHeight;
   if (widthAndHeight) {
     const sizeMatch = widthAndHeight.match(/^(\d+)x(\d+)$/);
     if (sizeMatch) {
@@ -950,7 +1052,7 @@ async function handleStaticRequest(
 
     // prettier-ignore
     return await respondImage(
-    options, item, z, x, y, bearing, pitch, parsedWidth, parsedHeight, scale, format, res, overlay, 'static',
+    options, item, z, x, y, bearing, pitch, parsedWidth, parsedHeight, scale, format, res, overlay, 'static', id,
      );
   } else if (staticTypeMatch.groups.minx) {
     // Area Based Static Image
@@ -990,7 +1092,7 @@ async function handleStaticRequest(
 
     // prettier-ignore
     return await respondImage(
-      options, item, z, x, y, bearing, pitch, parsedWidth, parsedHeight, scale, format, res, overlay, 'static',
+      options, item, z, x, y, bearing, pitch, parsedWidth, parsedHeight, scale, format, res, overlay, 'static', id,
      );
   } else if (staticTypeMatch.groups.auto) {
     // Area Static Image
@@ -1049,7 +1151,7 @@ async function handleStaticRequest(
 
     // prettier-ignore
     return await respondImage(
-        options, item, z, x, y, bearing, pitch, parsedWidth, parsedHeight, scale, format, res, overlay, 'static',
+        options, item, z, x, y, bearing, pitch, parsedWidth, parsedHeight, scale, format, res, overlay, 'static', id,
       );
   } else {
     return res.sendStatus(404);
@@ -1057,6 +1159,7 @@ async function handleStaticRequest(
 }
 const existingFonts = {};
 let maxScaleFactor = 2;
+let metricsModule = null;
 
 export const serve_rendered = {
   /**
@@ -1075,73 +1178,107 @@ export const serve_rendered = {
     maxScaleFactor = Math.min(Math.floor(options.maxScaleFactor || 3), 9);
     const app = express().disable('x-powered-by');
 
-    /**
-     * Handles requests for tile images.
-     * @param {object} req - Express request object.
-     * @param {object} res - Express response object.
-     * @param {object} next - Express next middleware function.
-     * @param {string} req.params.id - The id of the style.
-     * @param {string} [req.params.p1] - The tile size or static parameter, if available.
-     * @param {string} req.params.p2 - The z, static, or raw parameter.
-     * @param {string} req.params.p3 - The x or staticType parameter.
-     * @param {string} req.params.p4 - The y or width parameter.
-     * @param {string} req.params.scale - The scale parameter.
-     * @param {string} req.params.format - The format of the image.
-     * @returns {Promise<void>}
-     */
-    app.get(
-      `/:id{/:p1}/:p2/:p3/:p4{@:scale}{.:format}`,
-      async (req, res, next) => {
+    app.post(`/:id{/:p1}/:p2/:p3/:p4{@:scale}{.:format}`, (req, res, next) => {
+      const { p1, p2 } = req.params;
+      const requestType =
+        (!p1 && p2 === 'static') || (p1 === 'static' && p2 === 'raw')
+          ? 'static'
+          : 'tile';
+
+      if (requestType === 'tile') {
+        return res.status(405).send('Method Not Allowed');
+      }
+      next();
+    });
+    app.use(
+      express.json({
+        limit: '5mb',
+        verify: (req, res, buf) => {
+          try {
+            secureParse(buf.toString());
+          } catch (err) {
+            const error = new Error(
+              `Invalid JSON or forbidden key detected: ${err.message}`,
+            );
+            error.status = 400;
+            throw error;
+          }
+        },
+      }),
+    );
+
+    app.use((req, res, next) => {
+      if (req.method === 'POST' && req.body) {
         try {
-          const { p1, p2, id, p3, p4, scale, format } = req.params;
-          const requestType =
-            (!p1 && p2 === 'static') || (p1 === 'static' && p2 === 'raw')
-              ? 'static'
-              : 'tile';
-          if (verbose >= 3) {
-            console.log(
-              `Handling rendered %s request for: /styles/%s%s/%s/%s/%s%s.%s`,
-              requestType,
-              String(id).replace(/\n|\r/g, ''),
-              p1 ? '/' + String(p1).replace(/\n|\r/g, '') : '',
-              String(p2).replace(/\n|\r/g, ''),
-              String(p3).replace(/\n|\r/g, ''),
-              String(p4).replace(/\n|\r/g, ''),
-              scale ? '@' + String(scale).replace(/\n|\r/g, '') : '',
-              String(format).replace(/\n|\r/g, ''),
+          const merged = getSecureMergedParams(req.query, req.body);
+          Object.defineProperty(req, 'query', {
+            value: merged,
+            configurable: true,
+            enumerable: true,
+            writable: true,
+          });
+        } catch (err) {
+          return res.status(400).send(err.message);
+        }
+      }
+      next();
+    });
+
+    const renderHandler = async (req, res, next) => {
+      try {
+        const { p1, p2, id, p3, p4, scale, format } = req.params;
+        const requestType =
+          (!p1 && p2 === 'static') || (p1 === 'static' && p2 === 'raw')
+            ? 'static'
+            : 'tile';
+
+        if (verbose >= 3) {
+          console.log(
+            `Handling rendered %s request for: /styles/%s%s/%s/%s/%s%s.%s`,
+            requestType,
+            String(id).replace(/\n|\r/g, ''),
+            p1 ? '/' + String(p1).replace(/\n|\r/g, '') : '',
+            String(p2).replace(/\n|\r/g, ''),
+            String(p3).replace(/\n|\r/g, ''),
+            String(p4).replace(/\n|\r/g, ''),
+            scale ? '@' + String(scale).replace(/\n|\r/g, '') : '',
+            String(format).replace(/\n|\r/g, ''),
+          );
+        }
+
+        if (requestType === 'static') {
+          if (options.serveStaticMaps !== false) {
+            return handleStaticRequest(
+              options,
+              repo,
+              req,
+              res,
+              next,
+              maxScaleFactor,
             );
           }
-
-          if (requestType === 'static') {
-            // Route to static if p2 is static
-            if (options.serveStaticMaps !== false) {
-              return handleStaticRequest(
-                options,
-                repo,
-                req,
-                res,
-                next,
-                maxScaleFactor,
-              );
-            }
-            return res.sendStatus(404);
-          }
-
-          return handleTileRequest(
-            options,
-            repo,
-            req,
-            res,
-            next,
-            maxScaleFactor,
-            defailtTileSize,
-          );
-        } catch (e) {
-          console.log(e);
-          return next(e);
+          return res.sendStatus(404);
         }
-      },
-    );
+
+        return handleTileRequest(
+          options,
+          repo,
+          req,
+          res,
+          next,
+          maxScaleFactor,
+          defailtTileSize,
+        );
+      } catch (e) {
+        console.log(e);
+        return next(e);
+      }
+    };
+
+    // Bind both GET and POST to the main handler
+    const routePattern = `/:id{/:p1}/:p2/:p3/:p4{@:scale}{.:format}`;
+    app.get(routePattern, renderHandler);
+    app.post(routePattern, renderHandler);
 
     /**
      * Handles requests for rendered tilejson endpoint.
@@ -1215,6 +1352,13 @@ export const serve_rendered = {
     };
 
     const { publicUrl, verbose, fetchTimeout } = programOpts;
+
+    // Cache metrics module if enabled (avoids per-request dynamic imports).
+    // Guard prevents re-importing per style added. Safe because tests verify before production.
+    if (programOpts.metrics && !metricsModule) {
+      const m = await import('./metrics.js');
+      metricsModule = m;
+    }
 
     const styleJSON = clone(style);
 
@@ -1549,41 +1693,6 @@ export const serve_rendered = {
           }
           layer.paint['fill-extrusion-base'] = 0;
         }
-
-        // --- Remove hillshade properties incompatible with MapLibre Native ---
-        const hillshadePropertiesToRemove = [
-          'hillshade-method',
-          'hillshade-illumination-direction',
-          'hillshade-highlight-color',
-        ];
-
-        for (const prop of hillshadePropertiesToRemove) {
-          if (prop in layer.paint) {
-            if (verbose >= 1) {
-              console.warn(
-                `Warning: Layer '${layerIdForWarning}' in style '${id}' has property '${prop}'. ` +
-                  `This property is not supported by MapLibre Native. ` +
-                  `It will be removed in rendered images. ` +
-                  `Note: This property will still work with MapLibre GL JS vector maps.`,
-              );
-            }
-            // eslint-disable-next-line security/detect-object-injection -- prop is from hillshadePropertiesToRemove array, validated property names
-            delete layer.paint[prop];
-          }
-        }
-
-        // --- Remove 'hillshade-shadow-color' if it is an array. It can only be a string in MapLibre Native ---
-        if (Array.isArray(layer.paint['hillshade-shadow-color'])) {
-          if (verbose >= 1) {
-            console.warn(
-              `Warning: Layer '${layerIdForWarning}' in style '${id}' has property 'hillshade-shadow-color'. ` +
-                `An array value is not supported by MapLibre Native for this property (expected string/color). ` +
-                `It will be removed in rendered images. ` +
-                `Note: Using an array for this property will still work with MapLibre GL JS vector maps.`,
-            );
-          }
-          delete layer.paint['hillshade-shadow-color'];
-        }
       }
     }
 
@@ -1796,6 +1905,31 @@ export const serve_rendered = {
         maxPoolSize,
       );
     }
+
+    if (metricsModule) {
+      map._metricsInterval = setInterval(() => {
+        [map.renderers, map.renderersStatic].forEach((poolArr) => {
+          poolArr.forEach((pool) => {
+            if (!pool) return;
+            try {
+              const total = pool.size ?? 0;
+              const available = pool.available ?? 0;
+              metricsModule.renderPoolSize.set({ name: id }, total);
+              metricsModule.renderPoolActive.set(
+                { name: id },
+                total - available,
+              );
+              metricsModule.renderPoolWaiting.set(
+                { name: id },
+                pool.pending ?? 0,
+              );
+            } catch (_) {
+              /* pool may be mid-teardown */
+            }
+          });
+        });
+      }, 5000);
+    }
   },
   /**
    * Removes an item from the repository.
@@ -1807,6 +1941,26 @@ export const serve_rendered = {
     // eslint-disable-next-line security/detect-object-injection -- id is function parameter for removal
     const item = repo[id];
     if (item) {
+      if (item.map._metricsInterval) {
+        clearInterval(item.map._metricsInterval);
+      }
+      Object.keys(item.map.sources || {}).forEach((sourceId) => {
+        // eslint-disable-next-line security/detect-object-injection -- sourceId is from Object.keys() iteration
+        const source = item.map.sources[sourceId];
+        // eslint-disable-next-line security/detect-object-injection -- sourceId is from Object.keys() iteration
+        const sourceType = item.map.sourceTypes[sourceId];
+        if (
+          sourceType === 'mbtiles' &&
+          source &&
+          typeof source.close === 'function'
+        ) {
+          source.close((err) => {
+            if (err) {
+              console.warn('Failed to close MBTiles source:', err);
+            }
+          });
+        }
+      });
       item.map.renderers.forEach((pool) => {
         pool.close();
       });
@@ -1818,25 +1972,59 @@ export const serve_rendered = {
     delete repo[id];
   },
   /**
-   * Removes all items from the repository.
+   * Removes all items from the repository and closes owned local data sources.
    * @param {object} repo Repository object.
-   * @returns {void}
+   * @returns {Promise<void>}
    */
-  clear: function (repo) {
-    Object.keys(repo).forEach((id) => {
-      // eslint-disable-next-line security/detect-object-injection -- id is from Object.keys() iteration
-      const item = repo[id];
-      if (item) {
-        item.map.renderers.forEach((pool) => {
-          pool.close();
-        });
-        item.map.renderersStatic.forEach((pool) => {
-          pool.close();
-        });
-      }
-      // eslint-disable-next-line security/detect-object-injection -- id is from Object.keys() iteration
-      delete repo[id];
-    });
+  clear: async function (repo) {
+    await Promise.all(
+      Object.keys(repo).map(async (id) => {
+        // eslint-disable-next-line security/detect-object-injection -- id is from Object.keys() iteration
+        const item = repo[id];
+        try {
+          if (!item) {
+            return;
+          }
+
+          await Promise.all(
+            Object.keys(item.map.sources || {}).map(async (sourceId) => {
+              // eslint-disable-next-line security/detect-object-injection -- sourceId is from Object.keys() iteration
+              const source = item.map.sources[sourceId];
+              // eslint-disable-next-line security/detect-object-injection -- sourceId is from Object.keys() iteration
+              const sourceType = item.map.sourceTypes[sourceId];
+              if (
+                sourceType === 'mbtiles' &&
+                source &&
+                typeof source.close === 'function'
+              ) {
+                await new Promise((resolve) => {
+                  source.close((err) => {
+                    if (err) {
+                      console.warn(
+                        `Failed to close MBTiles source "${sourceId}" while clearing rendered repo entry "${id}":`,
+                        err,
+                      );
+                    }
+                    resolve();
+                  });
+                });
+              }
+            }),
+          );
+          item.map.renderers.forEach((pool) => {
+            pool.close();
+          });
+          item.map.renderersStatic.forEach((pool) => {
+            pool.close();
+          });
+        } catch (err) {
+          console.warn(`Failed to clear rendered repo entry "${id}":`, err);
+        } finally {
+          // eslint-disable-next-line security/detect-object-injection -- id is from Object.keys() iteration
+          delete repo[id];
+        }
+      }),
+    );
   },
 
   /**

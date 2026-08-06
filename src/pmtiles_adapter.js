@@ -235,18 +235,22 @@ class S3Source {
       }
 
       if (error.name === 'NoSuchKey') {
-        throw new Error(`PMTiles file not found: ${this.bucket}/${this.key}`);
+        throw new Error(`PMTiles file not found: ${this.bucket}/${this.key}`, {
+          cause: error,
+        });
       }
 
       if (error.name === 'AccessDenied') {
         throw new Error(
           `Access denied: ${this.bucket}/${this.key}. Check credentials and bucket permissions.`,
+          { cause: error },
         );
       }
 
       if (error.name === 'NoSuchBucket') {
         throw new Error(
           `Bucket not found: ${this.bucket}. Check bucket name and endpoint.`,
+          { cause: error },
         );
       }
 
@@ -293,14 +297,29 @@ class PMTilesFileSource {
   }
 
   /**
-   * Closes the underlying file descriptor.
+   * Closes the underlying file descriptor for local PMTiles sources.
+   * @returns {void}
+   */
+  close() {
+    if (typeof this.fd === 'number') {
+      const fd = this.fd;
+      try {
+        fs.closeSync(fd);
+      } catch (err) {
+        console.warn(`Failed to close PMTiles file descriptor ${fd}:`, err);
+      } finally {
+        this.fd = null;
+      }
+    }
+  }
+
+  /**
+   * Alias for {@link close}, so every source type tears down through the same
+   * call regardless of whether it is file- or torrent-backed.
    * @returns {void}
    */
   destroy() {
-    if (this.fd !== undefined) {
-      fs.closeSync(this.fd);
-      this.fd = undefined;
-    }
+    this.close();
   }
 }
 
@@ -453,7 +472,7 @@ export function openPMtiles(
     return pmtilesCache.get(cacheKey);
   }
 
-  let pmtiles = undefined;
+  let pmtiles;
 
   if (magnetTester.test(filePath)) {
     if (verbose >= 2) {
@@ -496,6 +515,20 @@ export function openPMtiles(
   pmtilesCache.set(cacheKey, pmtiles);
 
   return pmtiles;
+}
+
+/**
+ * Clears the PMTiles cache and releases what the cached sources hold: local
+ * file descriptors, and torrents in the shared WebTorrent client. The client
+ * itself is left running — see {@link destroyTorrentClient}.
+ * @returns {Promise<void>} - Resolves once every cached source has been closed.
+ */
+export async function clearPMtilesCache() {
+  // Snapshot and clear first: closePMTiles also prunes the cache, and mutating
+  // it while iterating is asking for trouble.
+  const cached = [...pmtilesCache.values()];
+  pmtilesCache.clear();
+  await Promise.all(cached.map((pmtiles) => closePMTiles(pmtiles)));
 }
 
 /**
@@ -576,7 +609,7 @@ export async function getPMtilesInfo(pmtiles, inputFile, maxRetries = 3) {
       // If not a 429 or last retry, throw immediately
       if (!error.message?.includes('429') || attempt === maxRetries - 1) {
         const errorMessage = `${error.message} for file: ${inputFile}`;
-        throw new Error(errorMessage);
+        throw new Error(errorMessage, { cause: error });
       }
     }
   }
