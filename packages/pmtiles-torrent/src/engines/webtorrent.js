@@ -150,6 +150,7 @@ export class WebTorrentEngine {
   #torrent;
   #file;
   #ownsClient = false;
+  #ownsTorrent = true;
   #readyPromise;
   #destroyed = false;
 
@@ -275,8 +276,11 @@ export class WebTorrentEngine {
       return;
     }
     // Shared client: drop our torrent but leave the client (and its other
-    // torrents) alone. Keep the store so we can resume seeding later.
-    if (torrent && !torrent.destroyed) torrent.destroy({ destroyStore: false });
+    // torrents) alone. Keep the store so we can resume seeding later. A torrent
+    // we joined rather than added belongs to someone else, so leave it be.
+    if (this.#ownsTorrent && torrent && !torrent.destroyed) {
+      torrent.destroy({ destroyStore: false });
+    }
   }
 
   /**
@@ -339,7 +343,18 @@ export class WebTorrentEngine {
         finish(() => reject(error));
         return;
       }
-      added.once('error', (error) => finish(() => reject(error)));
+      added.once('error', (error) => {
+        // A shared client reports a duplicate by destroying the torrent it just
+        // built and then invoking the callback with the one it already holds,
+        // so this particular error is not fatal — the callback still resolves
+        // us. Record that the torrent is not ours, so destroy() does not tear
+        // it out from under whoever added it first.
+        if (/duplicate torrent/i.test(error?.message ?? '')) {
+          this.#ownsTorrent = false;
+          return;
+        }
+        finish(() => reject(error));
+      });
     });
 
     this.#torrent = torrent;

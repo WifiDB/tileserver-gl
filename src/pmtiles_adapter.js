@@ -455,14 +455,22 @@ export function openPMtiles(
   s3UrlFormat,
   verbose = 0,
 ) {
-  // Create a cache key that includes all parameters that affect the source
-  const cacheKey = JSON.stringify({
-    filePath,
-    s3Profile,
-    requestPayer,
-    s3Region,
-    s3UrlFormat,
-  });
+  // Create a cache key that includes all parameters that affect the source.
+  //
+  // Torrents key on the identifier alone: none of the S3 parameters apply, and
+  // callers pass them inconsistently (main.js supplies verbose in the
+  // s3UrlFormat position). Letting an irrelevant argument split the key would
+  // build a second TorrentSource for the same archive, and the second engine
+  // would then fail to add a torrent the shared client already holds.
+  const cacheKey = isTorrentId(filePath)
+    ? JSON.stringify({ filePath })
+    : JSON.stringify({
+        filePath,
+        s3Profile,
+        requestPayer,
+        s3Region,
+        s3UrlFormat,
+      });
 
   // Check if we already have a PMTiles object for this configuration
   if (pmtilesCache.has(cacheKey)) {
