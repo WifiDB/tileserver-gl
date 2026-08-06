@@ -4,6 +4,8 @@ import { isValidHttpUrl, isS3Url, magnetTester } from './utils.js';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { fromIni } from '@aws-sdk/credential-provider-ini';
 import WebTorrent from 'webtorrent';
+import { TorrentSource } from 'pmtiles-torrent';
+import { WebTorrentEngine } from 'pmtiles-torrent/webtorrent';
 
 /**
  * S3 Source for PMTiles
@@ -289,6 +291,17 @@ class PMTilesFileSource {
     );
     return { data: ab };
   }
+
+  /**
+   * Closes the underlying file descriptor.
+   * @returns {void}
+   */
+  destroy() {
+    if (this.fd !== undefined) {
+      fs.closeSync(this.fd);
+      this.fd = undefined;
+    }
+  }
 }
 
 /**
@@ -310,234 +323,95 @@ async function readFileBytes(fd, buffer, offset) {
 }
 
 /**
- * Represents a PMTiles source that reads from a BitTorrent torrent via WebTorrent.
- * Uses lazy initialization — the WebTorrent client and torrent are not loaded
- * until the first call to getBytes(), keeping openPMtiles() synchronous.
+ * Torrent-backed PMTiles sources.
+ *
+ * The byte-range-to-piece mapping, piece cache, request deduplication and
+ * directory prefetch all live in the `pmtiles-torrent` package. This module
+ * only wires it up and owns the process's single WebTorrent client.
  */
-class PMTilesWebTorrentSource {
-  /**
-   * @param {string} torrentIdentifier - Magnet URI or info hash
-   * @param {number} timeoutMs - Timeout for downloading data in milliseconds (default 300000)
-   * @param {number} maxConns - Maximum number of peer connections (default 20)
-   */
-  constructor(torrentIdentifier, timeoutMs = 300000, maxConns = 20) {
-    this.torrentIdentifier = torrentIdentifier;
-    this.timeoutMs = timeoutMs;
-    this.maxConns = maxConns;
-    this.client = null;
-    this.torrent = null;
-    this.pieceSize = null;
-    this.lastPieceLength = null;
-    // Cache of fully downloaded pieces: pieceIndex -> Buffer
-    this.downloadedPieces = new Map();
-    // In-flight piece downloads: pieceIndex -> Promise<Buffer>
-    this._pendingPieces = new Map();
-    // Single lazily-created init promise — all concurrent callers share it
-    this._initPromise = null;
-  }
 
-  /**
-   * Returns the key of this source (the torrent identifier).
-   * @returns {string}
-   */
-  getKey() {
-    return this.torrentIdentifier;
-  }
+/** The one WebTorrent client shared by every torrent-backed archive. */
+let torrentClient = null;
 
-  /**
-   * Ensures the WebTorrent client is initialised, creating the promise once.
-   * @returns {Promise<void>}
-   */
-  _ensureInit() {
-    if (!this._initPromise) {
-      this._initPromise = this._doInit();
-    }
-    return this._initPromise;
-  }
+/**
+ * Reads a non-negative integer from the environment.
+ * @param {string} name - Environment variable name.
+ * @param {number} fallback - Value to use when unset or unparseable.
+ * @returns {number} - The configured value.
+ */
+function envInt(name, fallback) {
+  // eslint-disable-next-line security/detect-object-injection -- name is a string literal at every call site
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
 
-  /**
-   * Performs the actual WebTorrent initialisation.
-   * Creates the client, adds the torrent, and warms up by fetching piece 0
-   * (which contains the PMTiles file header).
-   * @returns {Promise<void>}
-   */
-  async _doInit() {
-    this.client = new WebTorrent({
-      utp: true,
-      dht: false,
-      tracker: {
-        udp: false,
-        http: false,
-      },
-      torrentPort: 0,
-      maxConns: this.maxConns,
+/**
+ * Lazily creates the WebTorrent client shared by every torrent-backed archive:
+ * one peer pool, one listening port, one DHT node for the whole process.
+ *
+ * Set PMTILES_TORRENT_PATH to the directory holding your archives. WebTorrent
+ * verifies whatever is already on disk at that path, so pointing it at complete
+ * files makes the tile server seed them immediately rather than re-download
+ * them — and makes partial downloads survive a restart.
+ * @returns {object} - The shared WebTorrent client.
+ */
+function getTorrentClient() {
+  if (!torrentClient) {
+    torrentClient = new WebTorrent({
+      maxConns: envInt('PMTILES_TORRENT_MAX_CONNS', 50),
+      torrentPort: envInt('PMTILES_TORRENT_PORT', 0),
     });
-
-    await new Promise((resolve, reject) => {
-      try {
-        this.client.add(this.torrentIdentifier, (torrent) => {
-          this.torrent = torrent;
-          this.pieceSize = torrent.pieceLength;
-          this.lastPieceLength = torrent.lastPieceLength;
-          console.log('Torrent loaded:', torrent.name);
-
-          const onReady = async () => {
-            torrent.removeListener('ready', onReady);
-            try {
-              if (this.torrent.files && this.torrent.files.length > 0) {
-                // Warm up: fetch piece 0 so the PMTiles header is ready immediately
-                await this._getPiece(0);
-                resolve();
-              } else {
-                reject(new Error('Torrent has no files'));
-              }
-            } catch (err) {
-              reject(err);
-            }
-          };
-
-          if (torrent.ready) {
-            onReady();
-          } else {
-            torrent.on('ready', onReady);
-          }
-
-          const onError = (err) => {
-            torrent.removeListener('error', onError);
-            this.destroy();
-            reject(err);
-          };
-          torrent.on('error', onError);
-        });
-      } catch (err) {
-        reject(err);
-      }
+    torrentClient.on('error', (err) => {
+      console.error(`WebTorrent client error: ${err.message}`);
     });
   }
+  return torrentClient;
+}
 
-  /**
-   * Asynchronously gets a byte range of the torrent file.
-   * @param {number} offset - Byte offset
-   * @param {number} length - Number of bytes to read
-   * @returns {Promise<{data: ArrayBuffer}>}
-   */
-  async getBytes(offset, length) {
-    await this._ensureInit();
+/**
+ * Creates a PMTiles source that reads byte ranges out of a BitTorrent swarm.
+ *
+ * Nothing is downloaded and no client is started until PMTiles asks for its
+ * first byte range, which keeps openPMtiles() synchronous.
+ * @param {string} torrentIdentifier - Magnet URI or info hash.
+ * @returns {object} - A PMTiles Source backed by the torrent.
+ */
+function createTorrentSource(torrentIdentifier) {
+  const engine = new WebTorrentEngine(torrentIdentifier, {
+    // Passed as a factory so no torrent client is started unless an archive
+    // actually needs one.
+    client: getTorrentClient,
+    path: process.env.PMTILES_TORRENT_PATH || undefined,
+    readyTimeoutMs: envInt('PMTILES_TORRENT_READY_TIMEOUT_MS', 120000),
+  });
 
-    if (!this.pieceSize) {
-      throw new Error('Piece size is not available');
-    }
+  return new TorrentSource(engine, {
+    // The budget is cachePieces * pieceLength, so the default is 128 MiB per
+    // archive against the 16 MiB pieces that large archives are usually cut
+    // with. Raise it on a dedicated server; every extra piece is another
+    // pieceLength of resident memory per archive.
+    cachePieces: envInt('PMTILES_TORRENT_CACHE_PIECES', 8),
+    // Leaf directories gate every tile lookup, so a long-lived server is
+    // usually better off pulling the whole section once. Planet-scale archives
+    // can exceed this, in which case each new leaf directory costs a blocking
+    // fetch instead.
+    maxLeafPrefetchBytes:
+      envInt('PMTILES_TORRENT_LEAF_PREFETCH_MB', 64) * 1024 * 1024,
+  });
+}
 
-    const startPieceIndex = Math.floor(offset / this.pieceSize);
-    const endPieceIndex = Math.floor((offset + length - 1) / this.pieceSize);
-
-    const combinedBuffer = Buffer.allocUnsafe(length);
-    let combinedOffset = 0;
-
-    for (let i = startPieceIndex; i <= endPieceIndex; i++) {
-      const pieceBuffer = await this._getPiece(i);
-      if (!pieceBuffer) {
-        throw new Error(`Piece ${i} could not be retrieved`);
-      }
-
-      let chunkOffset = 0;
-      if (i === startPieceIndex) {
-        chunkOffset = offset % this.pieceSize;
-      }
-
-      let bytesToCopy = pieceBuffer.length - chunkOffset;
-      if (i === endPieceIndex) {
-        bytesToCopy = Math.min(
-          bytesToCopy,
-          offset + length - (i * this.pieceSize + chunkOffset),
-        );
-      }
-
-      pieceBuffer.copy(
-        combinedBuffer,
-        combinedOffset,
-        chunkOffset,
-        chunkOffset + bytesToCopy,
-      );
-      combinedOffset += bytesToCopy;
-    }
-
-    // Slice to a self-contained ArrayBuffer. Buffer.allocUnsafe may share
-    // an underlying pool whose .buffer covers the full 8 KB slab — PMTiles
-    // reads from byte 0 of whatever ArrayBuffer we return, so without slicing
-    // it would read unrelated memory for small allocations.
-    return {
-      data: combinedBuffer.buffer.slice(
-        combinedBuffer.byteOffset,
-        combinedBuffer.byteOffset + combinedBuffer.byteLength,
-      ),
-    };
-  }
-
-  /**
-   * Fetches a single piece from the torrent, with caching and in-flight deduplication.
-   * @param {number} pieceIndex
-   * @returns {Promise<Buffer>}
-   */
-  async _getPiece(pieceIndex) {
-    // Return immediately from completed-piece cache
-    if (this.downloadedPieces.has(pieceIndex)) {
-      return this.downloadedPieces.get(pieceIndex);
-    }
-
-    // If a download is already in-flight, reuse it to avoid duplicate fetches
-    // and potential race conditions.
-    if (this._pendingPieces.has(pieceIndex)) {
-      return this._pendingPieces.get(pieceIndex);
-    }
-
-    const file = this.torrent.files[0];
-    if (!file) {
-      throw new Error('_getPiece: no file available in torrent');
-    }
-
-    const start = pieceIndex * this.pieceSize;
-    const isLastPiece =
-      pieceIndex === Math.floor((file.length - 1) / this.pieceSize);
-
-    // WebTorrent's blob() follows Node.js stream conventions where `end` is
-    // inclusive, so subtract 1 to avoid pulling one byte from the next piece.
-    const end = isLastPiece
-      ? start + this.lastPieceLength - 1
-      : (pieceIndex + 1) * this.pieceSize - 1;
-
-    const piecePromise = (async () => {
-      try {
-        const blob = await file.blob({ start, end });
-        const arrayBuffer = await blob.arrayBuffer();
-        const buf = Buffer.from(arrayBuffer);
-        this.downloadedPieces.set(pieceIndex, buf);
-        return buf;
-      } catch (err) {
-        console.error('Error getting piece', pieceIndex, err);
-        throw err;
-      } finally {
-        this._pendingPieces.delete(pieceIndex);
-      }
-    })();
-
-    this._pendingPieces.set(pieceIndex, piecePromise);
-    return piecePromise;
-  }
-
-  /**
-   * Destroys the WebTorrent client and releases all resources.
-   */
-  destroy() {
-    if (this.client) {
-      this.client.destroy();
-      this.client = null;
-    }
-    this.torrent = null;
-    this.downloadedPieces.clear();
-    this._pendingPieces.clear();
-    this._initPromise = null;
-  }
+/**
+ * Shuts down the shared WebTorrent client, announcing 'stopped' to trackers.
+ * Safe to call when no torrent-backed archive was ever opened.
+ * @returns {Promise<void>} - Resolves once the client has been destroyed.
+ */
+export async function destroyTorrentClient() {
+  if (!torrentClient) return;
+  const client = torrentClient;
+  torrentClient = null;
+  await new Promise((resolve) => client.destroy(() => resolve()));
 }
 
 // Cache for PMTiles objects to avoid creating multiple instances for the same URL
@@ -585,9 +459,9 @@ export function openPMtiles(
     if (verbose >= 2) {
       console.log(`Opening PMTiles from torrent: ${filePath}`);
     }
-    // PMTilesWebTorrentSource uses lazy initialisation — the WebTorrent client
-    // is not started until the first getBytes() call, so this stays synchronous.
-    const source = new PMTilesWebTorrentSource(filePath);
+    // Lazily initialised — the WebTorrent client is not started until the
+    // first getBytes() call, so this stays synchronous.
+    const source = createTorrentSource(filePath);
     pmtiles = new PMTiles(source);
   } else if (isS3Url(filePath)) {
     if (verbose >= 2) {
@@ -802,12 +676,26 @@ function getPmtilesTileType(typenum) {
   return { type: tileType, header: head };
 }
 /**
- * Closes and cleans up resources associated with a PMTiles object.
- * For torrent-backed sources this destroys the WebTorrent client.
+ * Closes and cleans up resources associated with a PMTiles object: the file
+ * descriptor for local archives, or the torrent for swarm-backed ones. The
+ * shared WebTorrent client outlives individual archives — see
+ * {@link destroyTorrentClient}.
  * @param {PMTiles} pmtiles - The PMTiles instance to close.
+ * @returns {Promise<void>} - Resolves once the source has been released.
  */
-export function closePMTiles(pmtiles) {
-  if (pmtiles && pmtiles._source && typeof pmtiles._source.destroy === 'function') {
-    pmtiles._source.destroy();
+export async function closePMTiles(pmtiles) {
+  if (!pmtiles) return;
+
+  // Drop it from the instance cache first, so a later openPMtiles() for the
+  // same file cannot hand back a source that is being torn down.
+  for (const [key, cached] of pmtilesCache) {
+    if (cached === pmtiles) pmtilesCache.delete(key);
+  }
+
+  // The public field is `source`; the previous `_source` never existed on the
+  // PMTiles class, so this function used to do nothing at all.
+  const source = pmtiles.source;
+  if (source && typeof source.destroy === 'function') {
+    await source.destroy();
   }
 }

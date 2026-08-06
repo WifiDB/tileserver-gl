@@ -16,6 +16,7 @@ import morgan from 'morgan';
 import { serve_data } from './serve_data.js';
 import { serve_style } from './serve_style.js';
 import { serve_font } from './serve_font.js';
+import { destroyTorrentClient } from './pmtiles_adapter.js';
 import {
   allowedTileSizes,
   getTileUrls,
@@ -1037,7 +1038,15 @@ async function start(opts) {
  */
 function stopGracefully(signal) {
   console.log(`Caught signal ${signal}, stopping gracefully`);
-  process.exit();
+  // Give the torrent client a moment to announce 'stopped' to its trackers, but
+  // never let shutdown hang on it.
+  const shutdown = destroyTorrentClient().catch((err) => {
+    console.error(`Error stopping torrent client: ${err.message}`);
+  });
+  Promise.race([
+    shutdown,
+    new Promise((resolve) => setTimeout(resolve, 5000).unref()),
+  ]).finally(() => process.exit());
 }
 
 /**
