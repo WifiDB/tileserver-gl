@@ -1,5 +1,6 @@
 *
 !src
+!packages
 !public
 !test
 !package.json

@@ -40,6 +40,9 @@ RUN mkdir -p /usr/src/app
 WORKDIR /usr/src/app
 
 COPY package.json package-lock.json ./
+# pmtiles-torrent is an in-repo file: dependency, so it has to be present
+# before npm ci resolves the tree.
+COPY packages ./packages
 
 RUN npm config set fetch-retries 5 && \
     npm config set fetch-retry-mintimeout 100000 && \
