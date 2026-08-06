@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import { PMTiles, FetchSource, EtagMismatch } from 'pmtiles';
-import { isValidHttpUrl, isS3Url, magnetTester } from './utils.js';
+import { isValidHttpUrl, isS3Url } from './utils.js';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { fromIni } from '@aws-sdk/credential-provider-ini';
 import WebTorrent from 'webtorrent';
-import { TorrentSource } from 'pmtiles-torrent';
+import { TorrentSource, isTorrentId } from 'pmtiles-torrent';
 import { WebTorrentEngine } from 'pmtiles-torrent/webtorrent';
 
 /**
@@ -474,7 +474,8 @@ export function openPMtiles(
 
   let pmtiles;
 
-  if (magnetTester.test(filePath)) {
+  // Magnet URI, bare infohash, or a path to a .torrent metainfo file.
+  if (isTorrentId(filePath)) {
     if (verbose >= 2) {
       console.log(`Opening PMTiles from torrent: ${filePath}`);
     }

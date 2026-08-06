@@ -20,6 +20,6 @@
  */
 
 export { PieceCache } from './cache.js';
-export { isTorrentId } from './id.js';
+export { isTorrentFile, isTorrentId, torrentDisplayName } from './id.js';
 export { HEADER_SIZE, readLayout } from './layout.js';
 export { TorrentSource } from './source.js';

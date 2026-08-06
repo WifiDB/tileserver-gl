@@ -76,6 +76,9 @@
     "tileserver-gl-styles": "2.0.0",
     "webtorrent": "^2.5.11"
   },
+  "overrides": {
+    "uint8-util": "2.2.5"
+  },
   "devDependencies": {
     "@commitlint/cli": "^21.2.0",
     "@commitlint/config-conventional": "^21.2.0",

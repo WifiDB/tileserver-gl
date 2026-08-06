@@ -316,9 +316,21 @@ export class TorrentSource {
       const created = {
         controller: new AbortController(),
         waiters: 0,
+        settled: false,
         promise: undefined,
       };
       created.promise = this.#fetchPiece(index, created.controller.signal);
+      // Registered before any waiter's callbacks, so `settled` is already true
+      // by the time they run. Without it, the last waiter detaching after a
+      // successful fetch would look identical to the last waiter giving up.
+      created.promise.then(
+        () => {
+          created.settled = true;
+        },
+        () => {
+          created.settled = true;
+        },
+      );
       // Waiters may all detach before this settles; keep Node quiet about it.
       created.promise.catch(() => {});
       created.promise
@@ -343,7 +355,11 @@ export class TorrentSource {
         if (detached) return true;
         detached = true;
         pending.waiters--;
-        if (pending.waiters === 0 && !pending.controller.signal.aborted) {
+        if (
+          pending.waiters === 0 &&
+          !pending.settled &&
+          !pending.controller.signal.aborted
+        ) {
           this.#stats.cancelled++;
           pending.controller.abort();
         }

@@ -16,6 +16,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { server } from './server.js';
 import { isValidRemoteUrl } from './utils.js';
+import { isTorrentId, torrentDisplayName } from 'pmtiles-torrent';
 import { openPMtiles, getPMtilesInfo } from './pmtiles_adapter.js';
 import { program } from 'commander';
 import { existsP } from './promises.js';
@@ -194,6 +195,24 @@ const startWithInputFile = async (inputFile) => {
   } else if (inputFile.startsWith('mbtiles://')) {
     fileType = 'mbtiles';
     inputFile = inputFile.replace('mbtiles://', '');
+  } else if (isTorrentId(inputFile)) {
+    // A magnet URI has no usable extension, and a .torrent file's is always
+    // ".torrent". Both advertise the archive name instead: the magnet's dn
+    // parameter, or the .torrent filename with its extension stripped.
+    const name = torrentDisplayName(inputFile);
+    const advertised = name ? name.split('.').pop().toLowerCase() : '';
+    if (advertised === 'mbtiles') {
+      console.log(
+        `ERROR: MBTiles cannot be served from a torrent ("${name}").`,
+      );
+      console.log(
+        `Random access to a SQLite file needs many dependent round trips and has no spatial locality to amortise them. Use a PMTiles archive.`,
+      );
+      process.exit(1);
+    }
+    // Only PMTiles can be served from a swarm, so assume it when the torrent
+    // advertises nothing useful.
+    fileType = 'pmtiles';
   } else {
     // Determine by extension (remove query parameters first)
     const extension = inputFile.split('?')[0].split('.').pop().toLowerCase();

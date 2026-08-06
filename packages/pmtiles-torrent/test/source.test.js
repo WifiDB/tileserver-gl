@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
 import { PieceCache } from '../src/cache.js';
-import { isTorrentId } from '../src/id.js';
+import { isTorrentFile, isTorrentId, torrentDisplayName } from '../src/id.js';
 import { readLayout } from '../src/layout.js';
 import { TorrentSource } from '../src/source.js';
 import { FakeEngine, ramp } from './fake-engine.js';
@@ -380,9 +380,45 @@ describe('helpers', () => {
       isTorrentId(`magnet:?xt=urn:btih:${'a'.repeat(40)}&dn=x.pmtiles`),
     );
     assert.ok(isTorrentId('a'.repeat(40)));
+    assert.ok(isTorrentId('/data/planet.pmtiles.torrent'));
+    assert.ok(isTorrentId('C:\\maps\\planet.pmtiles.TORRENT'));
     assert.ok(!isTorrentId('https://example.com/x.pmtiles'));
     assert.ok(!isTorrentId('/data/x.pmtiles'));
     assert.ok(!isTorrentId('s3://bucket/x.pmtiles'));
+  });
+
+  it('distinguishes .torrent files from other identifiers', () => {
+    assert.ok(isTorrentFile('/data/planet.pmtiles.torrent'));
+    assert.ok(!isTorrentFile(`magnet:?xt=urn:btih:${'a'.repeat(40)}`));
+    assert.ok(!isTorrentFile('/data/x.pmtiles'));
+  });
+
+  it('reads the archive name a torrent advertises', () => {
+    assert.strictEqual(
+      torrentDisplayName(
+        'magnet:?xt=urn:btih:5e1c143c400d15aaacfb1c748d4ab6d1b46c5df5&dn=planetiler-openmaptiles-latest.pmtiles&tr=udp%3a%2f%2ftracker.example%3a1337',
+      ),
+      'planetiler-openmaptiles-latest.pmtiles',
+    );
+    assert.strictEqual(
+      torrentDisplayName('C:\\maps\\planet.pmtiles.torrent'),
+      'planet.pmtiles',
+    );
+    assert.strictEqual(
+      torrentDisplayName('/data/planet.pmtiles.torrent'),
+      'planet.pmtiles',
+    );
+    // Percent-encoded display names are decoded.
+    assert.strictEqual(
+      torrentDisplayName(
+        `magnet:?xt=urn:btih:${'a'.repeat(40)}&dn=my%20map.pmtiles`,
+      ),
+      'my map.pmtiles',
+    );
+    assert.strictEqual(
+      torrentDisplayName(`magnet:?xt=urn:btih:${'a'.repeat(40)}`),
+      null,
+    );
   });
 
   it('rejects a truncated header', () => {
@@ -405,5 +441,17 @@ describe('helpers', () => {
     const cache = new PieceCache(50);
     cache.set(1, new Uint8Array(100));
     assert.strictEqual(cache.size, 0);
+  });
+});
+
+describe('stats', () => {
+  it('does not count a completed fetch as a cancellation', async () => {
+    const engine = new FakeEngine(ramp(1000), { pieceLength: 100 });
+    const source = new TorrentSource(engine);
+
+    await source.getBytes(0, 250);
+
+    assert.strictEqual(source.stats.cancelled, 0);
+    assert.strictEqual(source.stats.cacheMisses, 3);
   });
 });
