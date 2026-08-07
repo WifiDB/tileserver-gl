@@ -65,18 +65,50 @@ peer dependency, needed only if you use the bundled engine.
 - **Over-read clamping.** PMTiles speculatively reads 16 KiB for the header regardless of archive
   size. An HTTP server truncates that for you; here it is clamped explicitly.
 - **Directory prefetch.** Once the header is read, the root directory is marked critical and the
-  JSON metadata and leaf directories are marked high priority. Every tile lookup is gated on a
-  directory read, so these are worth prioritising before anything asks for them.
+  JSON metadata high priority. Both are small and needed immediately.
+- **Idle-only leaf hydration.** Leaf directories gate every tile lookup in a new region, so
+  having them locally is a large win — but fetching them eagerly starves the requests they exist
+  to accelerate. Measured on a 72 GiB archive against a single peer, eager prefetch took a cold
+  tile from 34.2s to **138.2s**. They are therefore queued at the lowest priority, started only
+  after the source has been idle, and withdrawn the instant a read arrives. Engines opt in by
+  implementing `unhint()`; hydration is skipped without it, since there would be no way to call
+  it off.
 
-```ts
+```js
 const source = new TorrentSource(engine, {
   cachePieces: 16,          // or cacheBytes for an explicit budget
   prefetchDirectories: true,
-  maxLeafPrefetchBytes: 16 * 1024 * 1024,
+  maxLeafPrefetchBytes: 256 * 1024 * 1024,
+  hydrateIdleMs: 2000,
 });
 
-source.stats; // cacheHits, cacheMisses, bytesFetched, bytesServed, cancelled, cacheBudget, ...
+source.stats; // cacheHits, cacheMisses, bytesFetched, bytesServed,
+              // cancelled, cachedPieces, cachedBytes, cacheBudget, hydrating
 ```
+
+## Resume data
+
+WebTorrent rebuilds its bitfield by hashing the entire store on every start. On a 72 GiB archive
+that measured **59.9 seconds**, and it scales with size — during which the torrent has not joined
+the swarm at all, which looks from the outside like "no peers".
+
+Passing `resumePath` persists the bitfield and hands it back next time, which measured **0.6
+seconds** for the same archive:
+
+```js
+new WebTorrentEngine(torrentId, {
+  path: '/mnt/maps/store',
+  resumePath: '/mnt/maps/store',   // same directory is fine
+});
+```
+
+A bitfield asserts pieces are present without re-hashing them, so a stale one would serve
+unverified bytes. It is only trusted when the data file still has the exact size and modification
+time recorded when it was written, and it is discarded if the torrent it names is not the one that
+loaded. Written atomically, saved on shutdown and every 60s.
+
+With startup under a second, expect to watch the swarm connect in real time — 10 to 20 seconds for
+tracker announce and handshake. That wait always existed; it used to hide behind the hashing.
 
 ## Piece size matters more than anything else here
 
@@ -114,10 +146,9 @@ amplification number suggests, but the tuning changes:
 - **Raise `cachePieces` on a server.** The default of 8 is 128 MiB per archive at this piece
   size. Somewhere between 16 and 64 is reasonable if you are serving one or two large archives
   and have the RAM.
-- **Consider raising `maxLeafPrefetchBytes`.** The 16 MiB default means leaf directories on a
-  planet-scale archive are never prefetched, so each new leaf directory costs a blocking 16 MiB
-  fetch. That default suits a browser; a long-lived server is usually better off pulling the
-  whole leaf section once.
+- **Leave `maxLeafPrefetchBytes` generous.** Since hydration is idle-only it never competes with
+  a request, so the 256 MiB default is safe. Do not try to force leaf directories in eagerly —
+  that was measured to make cold tiles four times worse, not better.
 
 Recutting is worth it for archives you expect to be browsed interactively, but it is not free:
 re-hashing 698 GiB from local disk costs no bandwidth, but the new infohash is a new swarm, and

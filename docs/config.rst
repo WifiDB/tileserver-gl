@@ -233,7 +233,7 @@ Each item in this object defines one style (map). It can have the following opti
 Each item specifies one data source which should be made accessible by the server. It has to have one of the following options:
 
 * ``mbtiles`` -- name of the mbtiles file
-* ``pmtiles`` -- name of the pmtiles file, url, or S3 path.
+* ``pmtiles`` -- name of the pmtiles file, url, S3 path, magnet URI, or ``.torrent`` file.
 
 For example::
 
@@ -249,8 +249,18 @@ For example::
     },
     "source4": {
       "pmtiles": "s3://my-bucket/tiles/terrain.pmtiles"
+    },
+    "source5": {
+      "pmtiles": "magnet:?xt=urn:btih:5e1c...&dn=planet.pmtiles"
+    },
+    "source6": {
+      "pmtiles": "planet.pmtiles.torrent"
     }
   }
+
+A magnet URI or ``.torrent`` file serves the archive directly from a BitTorrent swarm,
+fetching only the pieces needed for each tile rather than downloading it first. See
+:doc:`torrents` for configuration and performance characteristics.
 
 The data source does not need to be specified here unless you explicitly want to serve the raw data.
 

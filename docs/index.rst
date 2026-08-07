@@ -14,6 +14,7 @@ Contents:
    installation
    usage
    config
+   torrents
    deployment
    endpoints
 
