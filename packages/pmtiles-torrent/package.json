@@ -7,10 +7,12 @@
   "exports": {
     "./package.json": "./package.json",
     ".": "./src/index.js",
-    "./webtorrent": "./src/engines/webtorrent.js"
+    "./webtorrent": "./src/engines/webtorrent.js",
+    "./libtorrent": "./src/engines/libtorrent.js"
   },
   "files": [
     "src",
+    "sidecar",
     "NOTICE.md"
   ],
   "scripts": {
