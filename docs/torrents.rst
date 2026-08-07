@@ -134,6 +134,15 @@ file, so it can be set per deployment:
 ``PMTILES_TORRENT_MAX_CONNS``
     Maximum peer connections. Default ``50``.
 
+    This, rather than piece size, is what decides how hard the server leans on
+    network equipment: every peer is a NAT table entry, and consumer routers run out
+    of those long before bandwidth becomes the limit. Lower it if the network
+    misbehaves while seeding.
+
+``PMTILES_TORRENT_MAX_WEB_CONNS``
+    Simultaneous connections per web seed. Default ``8``; WebTorrent's own default is 4.
+    See :ref:`torrent-web-seeds`.
+
 ``PMTILES_TORRENT_PORT``
     Listening port. Default ``0`` (any free port).
 
@@ -201,6 +210,40 @@ first tile in a new area pays for the whole piece and the next several hundred n
 are free. It is a latency problem rather than a waste problem - provided the cache is
 large enough to hold the piece long enough to collect the payoff, which is why
 ``PMTILES_TORRENT_CACHE_PIECES`` is counted in pieces.
+
+.. _torrent-web-seeds:
+
+Web seeds: the fix for slow cold tiles
+======================================
+
+If a torrent carries a BEP 19 ``url-list`` — an HTTP URL serving the same bytes — the
+tile server uses it automatically, and it changes the performance picture completely.
+
+A web seed is always available and usually far faster than a small swarm, so it removes
+both problems at once: the wait for a peer at startup, and the bandwidth ceiling of a
+handful of seeders. Verified with DHT and trackers **disabled entirely**, a tile was
+served in 673 ms with no BitTorrent peers at all — every byte came over HTTP.
+
+Nothing needs configuring on this side; the URL is in the torrent. What matters is that
+whoever creates the torrent includes it:
+
+.. code-block:: bash
+
+  # mktorrent
+  mktorrent -w https://maps.example.org/files/planet.pmtiles ... planet.pmtiles
+
+  # pmtiles-swarm does it automatically when adding from a URL
+
+The origin must support HTTP range requests (``Accept-Ranges: bytes``), which any static
+file server and every CDN does.
+
+The one setting worth raising is ``PMTILES_TORRENT_MAX_WEB_CONNS``. WebTorrent allows
+only four simultaneous connections per web seed by default, which throttles exactly the
+source you most want to lean on; the default here is 8.
+
+If you publish archives over HTTP already, adding a web seed to their torrents is the
+single largest improvement available to a torrent-backed tile server — larger than piece
+size, and far larger than any client tuning.
 
 Measured performance
 ====================

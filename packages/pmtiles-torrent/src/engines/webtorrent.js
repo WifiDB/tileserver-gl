@@ -15,6 +15,7 @@
  * @property {string[]} [announce] - Extra tracker announce URLs.
  * @property {string} [filePath] - Select a specific file in a multi-file torrent by its path. Without it the engine picks the largest .pmtiles file, falling back to the largest file.
  * @property {number} [readyTimeoutMs] - How long to wait for torrent metadata. Default 60s.
+ * @property {number} [maxWebConns] - Simultaneous connections per web seed. WebTorrent defaults to 4; raise it when the torrent carries a BEP 19 url-list, since a web seed is usually far faster and more available than the swarm.
  * @property {string} [resumePath] - Directory for resume data. WebTorrent otherwise re-hashes the entire store on every start to rebuild its bitfield, which on a 72 GiB archive costs about a minute and scales with size. Saving the bitfield reduces that to milliseconds.
  * @property {number} [resumeIntervalMs] - How often to persist resume data while running. Default 60s.
  */
@@ -476,6 +477,14 @@ export class WebTorrentEngine {
     };
     if (this.#options.path) addOptions.path = this.#options.path;
     if (this.#options.announce) addOptions.announce = this.#options.announce;
+    // If the torrent carries a BEP 19 url-list, that HTTP origin is usually
+    // faster and far more available than the swarm — measured serving a tile in
+    // under a second with DHT and trackers disabled entirely. WebTorrent allows
+    // only 4 simultaneous connections per web seed by default, which throttles
+    // exactly the case worth leaning on.
+    if (this.#options.maxWebConns) {
+      addOptions.maxWebConns = this.#options.maxWebConns;
+    }
 
     // Resume data, when it is still valid, replaces a full re-hash of the
     // store. WebTorrent ignores a bitfield whose byte length does not match

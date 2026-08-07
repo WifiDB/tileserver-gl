@@ -411,6 +411,10 @@ function createTorrentSource(torrentIdentifier) {
     // A magnet has to complete a BEP 9 metadata exchange before anything else
     // can happen, which is far slower than reading a .torrent file.
     readyTimeoutMs: envInt('PMTILES_TORRENT_READY_TIMEOUT_MS', 300000),
+    // When the torrent names an HTTP origin as a web seed, that origin can
+    // serve tiles on its own — no peers required — and is typically much faster
+    // than a swarm with few seeders. WebTorrent caps this at 4 by default.
+    maxWebConns: envInt('PMTILES_TORRENT_MAX_WEB_CONNS', 8),
   });
 
   return new TorrentSource(engine, {
