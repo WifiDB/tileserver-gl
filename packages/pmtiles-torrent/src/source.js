@@ -11,7 +11,13 @@ const IMMUTABLE = 'public, max-age=31536000, immutable';
 /** Floor for the piece cache, used when the piece length is small. */
 const MIN_CACHE_BYTES = 64 * 1024 * 1024;
 const DEFAULT_CACHE_PIECES = 8;
-const DEFAULT_MAX_LEAF_PREFETCH_BYTES = 16 * 1024 * 1024;
+/**
+ * Leaf directories are hydrated only while idle, so this can be generous —
+ * it never competes with a request.
+ */
+const DEFAULT_MAX_LEAF_PREFETCH_BYTES = 256 * 1024 * 1024;
+/** How long the source must be idle before background hydration resumes. */
+const DEFAULT_HYDRATE_IDLE_MS = 2000;
 
 /**
  * Tuning for a torrent-backed source.
@@ -19,7 +25,8 @@ const DEFAULT_MAX_LEAF_PREFETCH_BYTES = 16 * 1024 * 1024;
  * @property {number} [cacheBytes] - Explicit byte budget for the piece cache. Zero disables caching and relies entirely on the engine's own store. Leave unset to size the cache from the torrent's piece length; a fixed byte budget is a trap with large pieces, since 64 MiB holds only four 16 MiB pieces.
  * @property {number} [cachePieces] - How many pieces the cache should hold when cacheBytes is not given. The effective budget is max(64 MiB, cachePieces * pieceLength). Default 8.
  * @property {boolean} [prefetchDirectories] - Prioritise the root directory, JSON metadata and leaf directories once the header is read. Default true.
- * @property {number} [maxLeafPrefetchBytes] - Upper bound on the leaf-directory region to prefetch. Default 16 MiB.
+ * @property {number} [maxLeafPrefetchBytes] - Upper bound on the leaf-directory region to hydrate in the background. Default 256 MiB.
+ * @property {number} [hydrateIdleMs] - How long no read must be in flight before background hydration resumes. Default 2000.
  * @property {string} [key] - Overrides the value returned by getKey().
  */
 
@@ -34,6 +41,7 @@ const DEFAULT_MAX_LEAF_PREFETCH_BYTES = 16 * 1024 * 1024;
  * @property {number} cachedPieces - Pieces currently resident.
  * @property {number} cachedBytes - Bytes currently resident.
  * @property {number} cacheBudget - Current cache budget, only final once metadata has arrived.
+ * @property {boolean} hydrating - Whether background hydration is currently running.
  */
 
 /**
@@ -67,6 +75,11 @@ export class TorrentSource {
   #initPromise;
   #info;
   #layoutRead = false;
+  /** Regions to fetch in the background while nothing is being requested. */
+  #hydrationRegions = [];
+  #hydrationActive = false;
+  #idleTimer;
+  #destroyed = false;
   #stats = {
     cacheHits: 0,
     cacheMisses: 0,
@@ -88,6 +101,7 @@ export class TorrentSource {
       prefetchDirectories: options.prefetchDirectories ?? true,
       maxLeafPrefetchBytes:
         options.maxLeafPrefetchBytes ?? DEFAULT_MAX_LEAF_PREFETCH_BYTES,
+      hydrateIdleMs: options.hydrateIdleMs ?? DEFAULT_HYDRATE_IDLE_MS,
       key: options.key,
     };
     // Provisional until metadata arrives and the piece length is known.
@@ -112,6 +126,7 @@ export class TorrentSource {
       cachedPieces: this.#cache.size,
       cachedBytes: this.#cache.byteLength,
       cacheBudget: this.#cache.maxBytes,
+      hydrating: this.#hydrationActive,
     };
   }
 
@@ -221,6 +236,9 @@ export class TorrentSource {
    * @returns {Promise<void>} - Resolves once the engine has been destroyed.
    */
   async destroy() {
+    this.#destroyed = true;
+    this.#suspendHydration();
+    this.#hydrationRegions = [];
     this.#cache.clear();
     for (const pending of this.#pending.values()) pending.controller.abort();
     this.#pending.clear();
@@ -336,10 +354,14 @@ export class TorrentSource {
       created.promise
         .finally(() => {
           if (this.#pending.get(index) === created) this.#pending.delete(index);
+          // Once nothing is outstanding, start counting down to hydration.
+          this.#scheduleHydration();
         })
         .catch(() => {});
       this.#pending.set(index, created);
       entry = created;
+      // A real request needs the bandwidth now; get hydration out of the way.
+      this.#suspendHydration();
     }
 
     const pending = entry;
@@ -443,17 +465,75 @@ export class TorrentSource {
     const inBounds = (offset, length) =>
       length > 0 && offset >= 0 && offset + length <= info.fileLength;
 
+    // The root directory and metadata are small and needed immediately, so
+    // they are worth fetching eagerly.
     if (inBounds(layout.rootDirectoryOffset, layout.rootDirectoryLength)) {
       hint(layout.rootDirectoryOffset, layout.rootDirectoryLength, 'critical');
     }
     if (inBounds(layout.jsonMetadataOffset, layout.jsonMetadataLength)) {
       hint(layout.jsonMetadataOffset, layout.jsonMetadataLength, 'high');
     }
+
+    // Leaf directories are a different matter. Every tile lookup in a new
+    // region needs one, so having them locally is a large win — but the
+    // section runs to hundreds of megabytes, and fetching it eagerly starves
+    // the very requests it is meant to accelerate. Measured on a 72 GiB
+    // archive against a single peer, eager prefetch took a cold tile from 34s
+    // to 138s. So it is queued for hydration while nothing is being read.
     if (
       inBounds(layout.leafDirectoryOffset, layout.leafDirectoryLength) &&
       layout.leafDirectoryLength <= this.#options.maxLeafPrefetchBytes
     ) {
-      hint(layout.leafDirectoryOffset, layout.leafDirectoryLength, 'high');
+      this.#hydrationRegions.push({
+        offset: layout.leafDirectoryOffset,
+        length: layout.leafDirectoryLength,
+      });
+      this.#scheduleHydration();
     }
+  }
+
+  /**
+   * Stops background hydration because a request needs the bandwidth. Called
+   * whenever a piece fetch starts.
+   * @returns {void}
+   */
+  #suspendHydration() {
+    if (this.#idleTimer !== undefined) {
+      clearTimeout(this.#idleTimer);
+      this.#idleTimer = undefined;
+    }
+    if (!this.#hydrationActive) return;
+    this.#hydrationActive = false;
+    const unhint = this.#engine.unhint?.bind(this.#engine);
+    if (!unhint) return;
+    for (const region of this.#hydrationRegions) {
+      unhint(region.offset, region.length);
+    }
+  }
+
+  /**
+   * Arms background hydration to resume once the source has been idle for
+   * `hydrateIdleMs`. A request arriving in the meantime disarms it again.
+   * @returns {void}
+   */
+  #scheduleHydration() {
+    if (this.#destroyed) return;
+    if (this.#hydrationActive || this.#hydrationRegions.length === 0) return;
+    // Pointless without a way to call the hydration off again.
+    if (!this.#engine.hint || !this.#engine.unhint) return;
+    if (this.#pending.size > 0) return;
+    if (this.#idleTimer !== undefined) return;
+
+    this.#idleTimer = setTimeout(() => {
+      this.#idleTimer = undefined;
+      if (this.#destroyed || this.#pending.size > 0) return;
+      this.#hydrationActive = true;
+      const hint = this.#engine.hint.bind(this.#engine);
+      for (const region of this.#hydrationRegions) {
+        hint(region.offset, region.length, 'normal');
+      }
+    }, this.#options.hydrateIdleMs);
+    // Do not hold the process open just to hydrate.
+    this.#idleTimer.unref?.();
   }
 }

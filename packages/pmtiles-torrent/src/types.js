@@ -49,6 +49,7 @@
  * @property {() => Promise<TorrentInfo>} ready - Resolves once torrent metadata is available. Must be idempotent.
  * @property {(offset: number, length: number, options?: ReadRangeOptions) => Promise<Uint8Array>} readRange - Reads length bytes starting at offset bytes into the archive file. Must resolve with exactly length bytes or reject.
  * @property {(offset: number, length: number, priority: Priority) => void} [hint] - Non-blocking request to start fetching a range in the background. Engines that cannot express priority may omit it.
+ * @property {(offset: number, length: number) => void} [unhint] - Withdraws a previous hint so the range stops competing for bandwidth. Background hydration is only attempted when an engine provides both hint and unhint.
  * @property {() => void | Promise<void>} destroy - Releases the engine's resources.
  */
 

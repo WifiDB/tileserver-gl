@@ -38,6 +38,7 @@ export class FakeEngine {
     this.key = 'torrent:fake';
     this.reads = [];
     this.hints = [];
+    this.unhints = [];
     this.aborted = 0;
     this.destroyed = false;
 
@@ -98,6 +99,16 @@ export class FakeEngine {
    */
   hint(offset, length, priority) {
     this.hints.push({ offset, length, priority });
+  }
+
+  /**
+   * Records a withdrawn hint.
+   * @param {number} offset - Byte offset.
+   * @param {number} length - Number of bytes.
+   * @returns {void}
+   */
+  unhint(offset, length) {
+    this.unhints.push({ offset, length });
   }
 
   /**

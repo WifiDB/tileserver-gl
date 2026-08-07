@@ -398,12 +398,19 @@ function getTorrentClient() {
  * @returns {object} - A PMTiles Source backed by the torrent.
  */
 function createTorrentSource(torrentIdentifier) {
+  const dataPath = process.env.PMTILES_TORRENT_PATH || undefined;
   const engine = new WebTorrentEngine(torrentIdentifier, {
     // Passed as a factory so no torrent client is started unless an archive
     // actually needs one.
     client: getTorrentClient,
-    path: process.env.PMTILES_TORRENT_PATH || undefined,
-    readyTimeoutMs: envInt('PMTILES_TORRENT_READY_TIMEOUT_MS', 120000),
+    path: dataPath,
+    // Without resume data WebTorrent re-hashes the whole store on every start
+    // to rebuild its bitfield — about a minute for a 72 GiB archive, and it
+    // scales with size. Defaults alongside the data.
+    resumePath: process.env.PMTILES_TORRENT_RESUME_PATH || dataPath,
+    // A magnet has to complete a BEP 9 metadata exchange before anything else
+    // can happen, which is far slower than reading a .torrent file.
+    readyTimeoutMs: envInt('PMTILES_TORRENT_READY_TIMEOUT_MS', 300000),
   });
 
   return new TorrentSource(engine, {
@@ -412,12 +419,13 @@ function createTorrentSource(torrentIdentifier) {
     // with. Raise it on a dedicated server; every extra piece is another
     // pieceLength of resident memory per archive.
     cachePieces: envInt('PMTILES_TORRENT_CACHE_PIECES', 8),
-    // Leaf directories gate every tile lookup, so a long-lived server is
-    // usually better off pulling the whole section once. Planet-scale archives
-    // can exceed this, in which case each new leaf directory costs a blocking
-    // fetch instead.
+    // Leaf directories gate every tile lookup, so having them locally is a
+    // large win — but fetching them eagerly starves the requests they are
+    // meant to accelerate. They are hydrated only while nothing is being read,
+    // which is why this budget can be generous.
     maxLeafPrefetchBytes:
-      envInt('PMTILES_TORRENT_LEAF_PREFETCH_MB', 64) * 1024 * 1024,
+      envInt('PMTILES_TORRENT_LEAF_PREFETCH_MB', 256) * 1024 * 1024,
+    hydrateIdleMs: envInt('PMTILES_TORRENT_HYDRATE_IDLE_MS', 2000),
   });
 }
 

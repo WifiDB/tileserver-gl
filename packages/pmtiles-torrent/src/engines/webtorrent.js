@@ -15,6 +15,8 @@
  * @property {string[]} [announce] - Extra tracker announce URLs.
  * @property {string} [filePath] - Select a specific file in a multi-file torrent by its path. Without it the engine picks the largest .pmtiles file, falling back to the largest file.
  * @property {number} [readyTimeoutMs] - How long to wait for torrent metadata. Default 60s.
+ * @property {string} [resumePath] - Directory for resume data. WebTorrent otherwise re-hashes the entire store on every start to rebuild its bitfield, which on a 72 GiB archive costs about a minute and scales with size. Saving the bitfield reduces that to milliseconds.
+ * @property {number} [resumeIntervalMs] - How often to persist resume data while running. Default 60s.
  */
 
 /** @type {Record<import('../types.js').Priority, number>} */
@@ -107,6 +109,99 @@ function pickFile(torrent, filePath) {
   return byLength.find((file) => file.name.endsWith('.pmtiles')) ?? byLength[0];
 }
 
+/** Format version for resume files, so a change can invalidate old ones. */
+const RESUME_VERSION = 1;
+
+/**
+ * Path of the resume file for a source key.
+ * @param {string} resumePath - Directory holding resume data.
+ * @param {string} key - The engine's stable key.
+ * @returns {Promise<string>} - Absolute path of the resume file.
+ */
+async function resumeFilePath(resumePath, key) {
+  const path = await import('node:path');
+  const safe = key.replace(/[^a-z0-9]+/gi, '_').slice(0, 120);
+  return path.join(resumePath, `${safe}.resume.json`);
+}
+
+/**
+ * Loads resume data, if it is still valid for what is on disk.
+ *
+ * A bitfield claims pieces are present without re-hashing them, so a stale one
+ * would have us serve unverified bytes. It is therefore only trusted when the
+ * data file is exactly the size and modification time it had when the bitfield
+ * was written — any write to the file invalidates it, and the cost of being
+ * wrong is one slow startup rather than corrupt tiles.
+ * @param {string} resumePath - Directory holding resume data.
+ * @param {string} key - The engine's stable key.
+ * @param {string} dataPath - Directory holding the torrent's files.
+ * @returns {Promise<object | null>} - Validated resume data, or null.
+ */
+async function loadResume(resumePath, key, dataPath) {
+  try {
+    const [fs, path] = await Promise.all([
+      import('node:fs/promises'),
+      import('node:path'),
+    ]);
+    const file = await resumeFilePath(resumePath, key);
+    const saved = JSON.parse(await fs.readFile(file, 'utf8'));
+    if (saved.version !== RESUME_VERSION) return null;
+    if (!saved.dataFile || !saved.bitfield) return null;
+
+    const stat = await fs.stat(path.join(dataPath, saved.dataFile));
+    if (stat.size !== saved.dataSize) return null;
+    if (Math.floor(stat.mtimeMs) !== Math.floor(saved.dataMtimeMs)) return null;
+
+    return {
+      ...saved,
+      bitfield: new Uint8Array(Buffer.from(saved.bitfield, 'base64')),
+    };
+  } catch {
+    // Missing or unreadable resume data just means a cold start.
+    return null;
+  }
+}
+
+/**
+ * Persists the torrent's bitfield alongside the identity of the data it
+ * describes.
+ * @param {string} resumePath - Directory holding resume data.
+ * @param {string} key - The engine's stable key.
+ * @param {object} torrent - The WebTorrent torrent.
+ * @param {object} file - The archive file within the torrent.
+ * @returns {Promise<void>} - Resolves once written, or silently on failure.
+ */
+async function saveResume(resumePath, key, torrent, file) {
+  try {
+    const [fs, path] = await Promise.all([
+      import('node:fs/promises'),
+      import('node:path'),
+    ]);
+    const bitfield = torrent.bitfield?.buffer;
+    if (!bitfield) return;
+
+    const dataFile = file.path;
+    const stat = await fs.stat(path.join(torrent.path, dataFile));
+
+    await fs.mkdir(resumePath, { recursive: true });
+    const target = await resumeFilePath(resumePath, key);
+    const body = JSON.stringify({
+      version: RESUME_VERSION,
+      infoHash: torrent.infoHash,
+      numPieces: torrent.pieces.length,
+      dataFile,
+      dataSize: stat.size,
+      dataMtimeMs: Math.floor(stat.mtimeMs),
+      bitfield: Buffer.from(bitfield).toString('base64'),
+    });
+    // Write then rename, so a crash cannot leave a half-written bitfield.
+    await fs.writeFile(`${target}.tmp`, body);
+    await fs.rename(`${target}.tmp`, target);
+  } catch {
+    // Resume data is an optimisation; failing to save it is not fatal.
+  }
+}
+
 /**
  * Loads WebTorrent lazily, so it stays a genuinely optional dependency.
  * @returns {Promise<new (opts?: object) => object>} - The WebTorrent constructor.
@@ -153,6 +248,7 @@ export class WebTorrentEngine {
   #ownsTorrent = true;
   #readyPromise;
   #destroyed = false;
+  #resumeTimer;
 
   /**
    * Creates a WebTorrent-backed engine.
@@ -257,12 +353,48 @@ export class WebTorrentEngine {
   }
 
   /**
+   * Withdraws a previous hint, so the range stops competing for bandwidth.
+   *
+   * This only clears non-streaming selections, which is what hint() creates —
+   * the selections an in-flight read makes for itself are untouched.
+   * @param {number} offset - Byte offset into the file.
+   * @param {number} length - Number of bytes.
+   * @returns {void}
+   */
+  unhint(offset, length) {
+    const torrent = this.#torrent;
+    const file = this.#file;
+    if (!torrent || !file || torrent.destroyed || length <= 0) return;
+
+    const first = Math.floor((file.offset + offset) / torrent.pieceLength);
+    const last = Math.floor(
+      (file.offset + offset + length - 1) / torrent.pieceLength,
+    );
+    torrent.deselect(first, last);
+  }
+
+  /**
    * Releases the torrent, and the client if this engine created it.
    * @returns {Promise<void>} - Resolves once torn down.
    */
   async destroy() {
     if (this.#destroyed) return;
     this.#destroyed = true;
+
+    if (this.#resumeTimer !== undefined) {
+      clearInterval(this.#resumeTimer);
+      this.#resumeTimer = undefined;
+    }
+    // Capture the bitfield before tearing anything down; this is the save that
+    // makes the next start fast.
+    if (this.#options.resumePath && this.#options.path && this.#torrent) {
+      await saveResume(
+        this.#options.resumePath,
+        this.key,
+        this.#torrent,
+        this.#file,
+      );
+    }
 
     const torrent = this.#torrent;
     const client = this.#client;
@@ -280,6 +412,41 @@ export class WebTorrentEngine {
     // we joined rather than added belongs to someone else, so leave it be.
     if (this.#ownsTorrent && torrent && !torrent.destroyed) {
       torrent.destroy({ destroyStore: false });
+    }
+  }
+
+  /**
+   * Periodically persists resume data, so a crash costs at most one interval
+   * of re-hashing rather than the whole store.
+   * @returns {void}
+   */
+  #startResumeTimer() {
+    if (!this.#options.resumePath || !this.#options.path) return;
+    const interval = this.#options.resumeIntervalMs ?? 60000;
+    this.#resumeTimer = setInterval(() => {
+      if (this.#torrent && this.#file) {
+        saveResume(
+          this.#options.resumePath,
+          this.key,
+          this.#torrent,
+          this.#file,
+        );
+      }
+    }, interval);
+    this.#resumeTimer.unref?.();
+  }
+
+  /**
+   * Removes resume data that turned out not to describe this torrent.
+   * @returns {Promise<void>} - Resolves once removed, or silently on failure.
+   */
+  async #discardResume() {
+    try {
+      const fs = await import('node:fs/promises');
+      const target = await resumeFilePath(this.#options.resumePath, this.key);
+      await fs.rm(target, { force: true });
+    } catch {
+      /* nothing useful to do if it cannot be removed */
     }
   }
 
@@ -309,6 +476,19 @@ export class WebTorrentEngine {
     };
     if (this.#options.path) addOptions.path = this.#options.path;
     if (this.#options.announce) addOptions.announce = this.#options.announce;
+
+    // Resume data, when it is still valid, replaces a full re-hash of the
+    // store. WebTorrent ignores a bitfield whose byte length does not match
+    // the piece count, so a mismatched one degrades to a normal verify.
+    let resume = null;
+    if (this.#options.resumePath && this.#options.path) {
+      resume = await loadResume(
+        this.#options.resumePath,
+        this.key,
+        this.#options.path,
+      );
+      if (resume) addOptions.bitfield = resume.bitfield;
+    }
 
     const timeoutMs = this.#options.readyTimeoutMs ?? 60000;
     const torrent = await new Promise((resolve, reject) => {
@@ -360,6 +540,22 @@ export class WebTorrentEngine {
     this.#torrent = torrent;
     const file = pickFile(torrent, this.#options.filePath);
     this.#file = file;
+
+    // The resume file is keyed by the source identifier, which for a .torrent
+    // path says nothing about the torrent's identity. If it turns out to
+    // describe a different torrent, the bitfield we just handed over is
+    // meaningless, so re-add without it rather than trust unverified pieces.
+    if (resume && resume.infoHash !== torrent.infoHash) {
+      await this.#discardResume();
+      this.#torrent = undefined;
+      this.#file = undefined;
+      torrent.destroy({ destroyStore: false });
+      throw new Error(
+        `resume data for ${this.key} describes torrent ${resume.infoHash}, not ${torrent.infoHash}; discarded, retry to verify from disk`,
+      );
+    }
+
+    this.#startResumeTimer();
 
     return {
       infoHash: torrent.infoHash,

@@ -322,10 +322,11 @@ describe('directory prefetch', () => {
 
     await source.getBytes(0, 16384);
 
+    // Root and metadata are small and fetched eagerly; the leaf section is
+    // queued for idle hydration instead of competing with the read.
     assert.deepStrictEqual(engine.hints, [
       { offset: 127, length: 200, priority: 'critical' },
       { offset: 327, length: 100, priority: 'high' },
-      { offset: 427, length: 500, priority: 'high' },
     ]);
   });
 
@@ -361,7 +362,7 @@ describe('directory prefetch', () => {
     const source = new TorrentSource(on);
     await source.getBytes(0, 200);
     await source.getBytes(0, 200);
-    assert.strictEqual(on.hints.length, 3);
+    assert.strictEqual(on.hints.length, 2);
   });
 
   it('ignores archives that are not PMTiles v3', async () => {
@@ -453,5 +454,124 @@ describe('stats', () => {
 
     assert.strictEqual(source.stats.cancelled, 0);
     assert.strictEqual(source.stats.cacheMisses, 3);
+  });
+});
+
+describe('idle hydration', () => {
+  /**
+   * Builds an archive whose header points at the given sections.
+   * @param {number} leafOffset - Leaf directory offset.
+   * @param {number} leafLength - Leaf directory length.
+   * @param {number} total - Archive length.
+   * @returns {Uint8Array} - The archive bytes.
+   */
+  function archiveWithLeaf(leafOffset, leafLength, total) {
+    const data = ramp(total);
+    data.set(new TextEncoder().encode('PMTiles'), 0);
+    data[7] = 3;
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    /**
+     * Writes a little-endian uint64.
+     * @param {number} at - Field offset.
+     * @param {number} value - Value to write.
+     * @returns {void}
+     */
+    const put = (at, value) => {
+      view.setUint32(at, value >>> 0, true);
+      view.setUint32(at + 4, Math.floor(value / 2 ** 32), true);
+    };
+    put(8, 127); // root directory
+    put(16, 50);
+    put(24, 177); // metadata
+    put(32, 50);
+    put(40, leafOffset);
+    put(48, leafLength);
+    return data;
+  }
+
+  const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it('does not hydrate leaf directories eagerly', async () => {
+    const engine = new FakeEngine(archiveWithLeaf(1000, 500, 2000), {
+      pieceLength: 512,
+    });
+    const source = new TorrentSource(engine, { hydrateIdleMs: 10000 });
+
+    await source.getBytes(0, 200);
+
+    // Root and metadata only — the leaf section must not compete with reads.
+    assert.deepStrictEqual(
+      engine.hints.map((h) => h.offset),
+      [127, 177],
+    );
+    assert.strictEqual(source.stats.hydrating, false);
+    await source.destroy();
+  });
+
+  it('hydrates leaf directories once idle', async () => {
+    const engine = new FakeEngine(archiveWithLeaf(1000, 500, 2000), {
+      pieceLength: 512,
+    });
+    const source = new TorrentSource(engine, { hydrateIdleMs: 20 });
+
+    await source.getBytes(0, 200);
+    await settle(80);
+
+    assert.deepStrictEqual(engine.hints.at(-1), {
+      offset: 1000,
+      length: 500,
+      priority: 'normal',
+    });
+    assert.strictEqual(source.stats.hydrating, true);
+    await source.destroy();
+  });
+
+  it('yields to a request that arrives mid-hydration', async () => {
+    const engine = new FakeEngine(archiveWithLeaf(1000, 500, 2000), {
+      pieceLength: 512,
+    });
+    const source = new TorrentSource(engine, { hydrateIdleMs: 20 });
+
+    await source.getBytes(0, 200);
+    await settle(80);
+    assert.strictEqual(source.stats.hydrating, true);
+
+    // A tile request must claw the bandwidth back immediately.
+    await source.getBytes(1600, 100);
+
+    assert.deepStrictEqual(engine.unhints, [{ offset: 1000, length: 500 }]);
+    await source.destroy();
+  });
+
+  it('stops hydrating when destroyed', async () => {
+    const engine = new FakeEngine(archiveWithLeaf(1000, 500, 2000), {
+      pieceLength: 512,
+    });
+    const source = new TorrentSource(engine, { hydrateIdleMs: 20 });
+
+    await source.getBytes(0, 200);
+    await source.destroy();
+    await settle(80);
+
+    assert.strictEqual(source.stats.hydrating, false);
+  });
+
+  it('skips a leaf section larger than the hydration budget', async () => {
+    const engine = new FakeEngine(archiveWithLeaf(1000, 900, 2000), {
+      pieceLength: 512,
+    });
+    const source = new TorrentSource(engine, {
+      hydrateIdleMs: 20,
+      maxLeafPrefetchBytes: 500,
+    });
+
+    await source.getBytes(0, 200);
+    await settle(80);
+
+    assert.deepStrictEqual(
+      engine.hints.map((h) => h.offset),
+      [127, 177],
+    );
+    await source.destroy();
   });
 });
