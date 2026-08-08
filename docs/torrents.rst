@@ -9,7 +9,8 @@ disk free.
 
 This works because the two formats line up well. PMTiles is read as a series of byte
 ranges; BitTorrent serves data as fixed-size, individually verified pieces. The mapping
-between them lives in the ``pmtiles-torrent`` package, in ``packages/pmtiles-torrent``.
+between them lives in `pmtiles-torrent <https://github.com/TechIdiots-LLC/pmtiles-torrent>`_,
+a separate package this server depends on from npm.
 
 Quick start
 ===========

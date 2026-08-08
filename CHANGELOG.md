@@ -2,7 +2,13 @@
 
 ## master
 ### ✨ Features and improvements
-- _...Add new stuff here..._
+- Depend on `pmtiles-torrent` from npm instead of the vendored copy in `packages/`.
+- Upgrade WebTorrent to 3.x, which drops the `uint8-util` override the 2.x line needed to add
+  magnets at all. Also picks up upstream fixes to web seed request accounting and to port and
+  connection exhaustion, both of which this server leans on.
+- **Node 20 is no longer supported** — WebTorrent 3 requires Node 22+, and Node 20 reached end
+  of life in April 2026. Supported versions are now `^22.13.0 || 24`; the Docker image already
+  shipped Node 24.
 
 ### 🐞 Bug fixes
 - _...Add new stuff here..._
