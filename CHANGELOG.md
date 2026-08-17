@@ -2,7 +2,11 @@
 
 ## master
 ### ✨ Features and improvements
-- Depend on `pmtiles-torrent` from npm instead of the vendored copy in `packages/`.
+- Depend on `pmtiles-torrent` from npm instead of the vendored copy in `packages/`, and track
+  0.7.0. Nothing here calls the libtorrent sidecar that release fixed — this server reads
+  through the WebTorrent engine — but it had been pinned at 0.4.0 and so was missing the source
+  fixes since, chiefly the archive tail being fetched before anything reads the header. Without
+  it the PMTiles root directory is a cold round trip on the first tile of every archive.
 - Upgrade WebTorrent to 3.x, which drops the `uint8-util` override the 2.x line needed to add
   magnets at all. Also picks up upstream fixes to web seed request accounting and to port and
   connection exhaustion, both of which this server leans on.
